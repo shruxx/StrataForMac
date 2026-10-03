@@ -6,7 +6,13 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define _mm_pause() __asm__ __volatile__("isb")
+#else
+#define _mm_pause() ((void)0)
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +20,12 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#include <sys/sysctl.h>
+#include <mach/mach_types.h>
+#include <mach/thread_act.h>
+#include <mach/thread_policy.h>
 #else
 #include <pthread.h>
 #include <sched.h>
@@ -135,6 +147,29 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         }
         return topo;
     }
+#elif defined(__APPLE__)
+    int p_cores = 0, e_cores = 0, total_cores = 0;
+    size_t len = sizeof(int);
+    sysctlbyname("hw.perflevel0.physicalcpu", &p_cores, &len, nullptr, 0);
+    len = sizeof(int);
+    sysctlbyname("hw.perflevel1.physicalcpu", &e_cores, &len, nullptr, 0);
+    len = sizeof(int);
+    if (sysctlbyname("hw.physicalcpu", &total_cores, &len, nullptr, 0) != 0 || total_cores <= 0) {
+        total_cores = (int) std::thread::hardware_concurrency();
+    }
+    if (p_cores <= 0) p_cores = total_cores;
+    topo.is_hybrid = (e_cores > 0 && p_cores > 0);
+    topo.p_cores = p_cores;
+    topo.p_threads = p_cores;
+    topo.e_cores = e_cores;
+    for (int i = 0; i < total_cores; ++i) {
+        topo.worker_cores.push_back(i);
+    }
+    if (skip_first && !topo.worker_cores.empty()) {
+        topo.host_core = topo.worker_cores.front();
+        topo.worker_cores.erase(topo.worker_cores.begin());
+    }
+    return topo;
 #else
     // The logical CPUs this process may run on, ONE PER PHYSICAL CORE (issue #40): SMT siblings share a core's
     // load/store bandwidth, so a worker on each would put two workers on one core, as the Windows branch above
@@ -268,6 +303,12 @@ void pin_this_thread(int core) {
     if (core < 0) return;
 #if defined(_WIN32)
     SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) 1 << (core & 63));
+#elif defined(__APPLE__)
+    thread_affinity_policy_data_t policy = { core + 1 };
+    thread_policy_set(pthread_mach_thread_np(pthread_self()),
+                      THREAD_AFFINITY_POLICY,
+                      (thread_policy_t)&policy,
+                      THREAD_AFFINITY_POLICY_COUNT);
 #else
     cpu_set_t set;
     CPU_ZERO(&set);
@@ -285,6 +326,9 @@ long long pin_current_thread(int core) {
     // why the caller must not treat it as a restorable value.
     const DWORD_PTR prev = SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) 1 << (core & 63));
     return prev == 0 ? -1 : (long long) prev;
+#elif defined(__APPLE__)
+    pin_this_thread(core);
+    return 1;
 #else
     cpu_set_t prev;
     CPU_ZERO(&prev);
@@ -301,6 +345,8 @@ void restore_thread_affinity(long long previous) {
     if (previous <= 0) return;
 #if defined(_WIN32)
     SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) previous);
+#elif defined(__APPLE__)
+    // Darwin kernel manages thread scheduling
 #else
     cpu_set_t set;
     CPU_ZERO(&set);

@@ -1,7 +1,7 @@
 <h1 align="center">Strata</h1>
 
-<p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
-NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
+<p align="center"><b>Run a 125-billion-parameter AI model on your own PC or Mac</b><br>
+Apple Silicon Mac · NVIDIA or AMD graphics card (12 GB or more) · macOS, Windows or Linux · free and open source</p>
 
 <p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
 <sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
@@ -50,10 +50,10 @@ other cards: [speed of each model](docs/MODELS.md#how-fast-is-each-size), [commu
 
 | | |
 | --- | --- |
-| **Graphics card** | **NVIDIA** GeForce RTX 20, 30, 40 or 50 series, or **AMD** Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700 or RX 6800 / 6900 series - with **12 GB of VRAM or more** |
+| **Graphics card** | **Apple Silicon Mac** (M1/M2/M3/M4), **NVIDIA** GeForce RTX 20, 30, 40 or 50 series, or **AMD** Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700 or RX 6800 / 6900 series - with **12 GB of VRAM or more** (Apple: Unified Memory) |
 | **RAM** | 32 GB or more - how much decides [which model](#which-model-should-i-pick) fits; 64 GB runs every size |
 | **Disk** | about 80 GB free, on an SSD if you can (the first start is much faster) |
-| **System** | Windows 10 / 11 or Linux, and a current graphics driver from NVIDIA or AMD |
+| **System** | macOS (Apple Silicon: [docs/MACOS.md](docs/MACOS.md)), Windows 10 / 11 or Linux |
 
 Everything else is installed for you. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
@@ -65,7 +65,7 @@ The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 Use an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Paste this into it:
 
 ```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
+Set up Strata on this PC for me: https://github.com/shruxx/StrataForMac - follow docs/AI_SETUP.md in that repository.
 ```
 
 It checks your graphics card, RAM and disk, picks the model that fits, installs it, starts it and tells you how to
@@ -74,8 +74,8 @@ connect your apps. AI tools can also install, start and stop Strata themselves t
 
 ### Or do it yourself
 
-[Download Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
-**Windows:** double-click **`START-HERE.bat`**. **Linux:** run **`./setup.sh`** in the Strata folder.
+[Download Strata](https://github.com/shruxx/StrataForMac/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
+**macOS & Linux:** run **`./setup.sh`** in the Strata folder. **Windows:** double-click **`START-HERE.bat`**.
 
 The same steps for NVIDIA and AMD: the installer finds your card and sets up the right engine for it. It asks which
 model, which size, how much context (how much text it keeps in mind) and whether it should read pictures - press

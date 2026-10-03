@@ -12,6 +12,8 @@
 // Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23).  IQ1_M stays on ggml-cpu.
 #include "strata/kernels/cpu/iq_avx2.hpp"
 
+#if defined(__x86_64__) || defined(_M_X64)
+
 #define GGML_COMMON_DECL_CPP
 #define GGML_COMMON_IMPL_CPP
 #include "ggml-common.h"
@@ -462,3 +464,16 @@ void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* c
 }
 
 }  // namespace strata::kernels::cpu
+
+#else
+
+namespace strata::kernels::cpu {
+
+bool iq256_supported(int) noexcept { return false; }
+void iq256_gu_rows(int, const uint8_t*, size_t, size_t, int, const void* const*, int, float* const*, int, int) {}
+void iq256_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {}
+void iq4nl256_down_rows(const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {}
+
+}  // namespace strata::kernels::cpu
+
+#endif

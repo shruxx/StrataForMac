@@ -14,6 +14,8 @@ import collections
 import ctypes
 import os
 import platform
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -182,8 +184,52 @@ class _Amd:
         return out
 
 
+class _AppleGpu:
+    """Apple Silicon integrated GPU readings via macOS sysctl and vm_stat (Unified Memory)."""
+
+    def __init__(self):
+        self._name = "Apple Silicon GPU"
+        try:
+            brand = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"]).decode().strip()
+            if brand:
+                self._name = brand
+        except Exception:
+            pass
+
+    def ok(self):
+        return sys.platform == "darwin" and platform.machine() == "arm64"
+
+    def name(self):
+        return self._name
+
+    def read(self):
+        out = {"util": None}
+        try:
+            total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip())
+            out["mem_total"] = total
+            vm = subprocess.check_output(["vm_stat"]).decode()
+            free_pages = 0
+            page_size = 16384
+            for line in vm.splitlines():
+                if "page size of" in line:
+                    m = re.search(r"(\d+) bytes", line)
+                    if m:
+                        page_size = int(m.group(1))
+                elif "Pages free:" in line or "Pages speculative:" in line or "Pages purgeable:" in line:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        free_pages += int(parts[1].strip().rstrip("."))
+            free_bytes = free_pages * page_size
+            out["mem_used"] = max(0, total - free_bytes)
+        except Exception:
+            pass
+        return out
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
+    """The card's readings: Apple Silicon GPU, NVML (NVIDIA), or amdgpu sysfs (AMD)."""
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        return _AppleGpu()
     return _Amd(index) if amd else _Nvml(index)
 
 
@@ -206,6 +252,11 @@ def _cpu_name():
             k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
             return winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
         except OSError:
+            pass
+    elif sys.platform == "darwin":
+        try:
+            return subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"]).decode().strip()
+        except Exception:
             pass
     elif os.path.exists("/proc/cpuinfo"):
         for line in open("/proc/cpuinfo", encoding="utf-8", errors="replace"):
@@ -253,6 +304,25 @@ class _CpuRamFallback:
             if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
                 return m.ullTotalPhys - m.ullAvailPhys, m.ullTotalPhys
             return None, None
+        if sys.platform == "darwin":
+            try:
+                total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip())
+                vm = subprocess.check_output(["vm_stat"]).decode()
+                free_pages = 0
+                page_size = 16384
+                for line in vm.splitlines():
+                    if "page size of" in line:
+                        m = re.search(r"(\d+) bytes", line)
+                        if m:
+                            page_size = int(m.group(1))
+                    elif "Pages free:" in line or "Pages speculative:" in line or "Pages purgeable:" in line:
+                        parts = line.split(":")
+                        if len(parts) == 2:
+                            free_pages += int(parts[1].strip().rstrip("."))
+                avail = free_pages * page_size
+                return max(0, total - avail), total
+            except Exception:
+                pass
         try:
             info = dict(line.split(":", 1) for line in open("/proc/meminfo"))
             total = int(info["MemTotal"].split()[0]) * 1024

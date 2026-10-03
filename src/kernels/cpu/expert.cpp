@@ -5,11 +5,15 @@
 // include/strata/kernels/cpu/expert.hpp.  Read that header first; it says why each piece is shaped this way.
 #include "strata/kernels/cpu/expert.hpp"
 
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
 #include <cpuid.h>
+#endif
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
 #endif
 
 #include <cmath>
@@ -49,6 +53,22 @@ inline float h2f(const uint8_t* p) {
     return out;
 }
 
+inline uint16_t f2h(float f) {
+    uint32_t x;
+    std::memcpy(&x, &f, 4);
+    uint32_t sign = (x >> 16) & 0x8000;
+    int32_t exp = (int32_t)((x >> 23) & 0xFF) - 127 + 15;
+    uint32_t mant = (x & 0x007FFFFF);
+    if (exp <= 0) {
+        if (exp < -10) return (uint16_t) sign;
+        mant = (mant | 0x00800000) >> (1 - exp);
+        return (uint16_t) (sign | ((mant + 0x1000) >> 13));
+    } else if (exp >= 31) {
+        return (uint16_t) (sign | 0x7C00);
+    }
+    return (uint16_t) (sign | (exp << 10) | ((mant + 0x1000) >> 13));
+}
+
 // The x86 Q8_0 quantization and generic Q2_0 dot sequences are adapted from llama.cpp
 // 3cf03257f219afbe7334045ff7c6a06ac68c627d,
 // ggml/src/ggml-cpu/arch/x86/quants.c: quantize_row_q8_0 and
@@ -78,6 +98,7 @@ void quantize_oracle_q8_0(const float* x, int n, ActQ& a) {
     a.nchunks = n / QKA;
     for (int chunk = 0; chunk < a.nchunks; ++chunk) {
         const float* xb = x + chunk * QKA;
+#if defined(__x86_64__) || defined(_M_X64)
         __m256 v0 = _mm256_loadu_ps(xb);
         __m256 v1 = _mm256_loadu_ps(xb + 8);
         __m256 v2 = _mm256_loadu_ps(xb + 16);
@@ -109,9 +130,29 @@ void quantize_oracle_q8_0(const float* x, int n, ActQ& a) {
         a.scale[chunk] = h2f((const uint8_t*) &half_d);
         a.sum[chunk] = sum;
         a.hx[chunk] = a.scale[chunk] * float(sum);
+#else
+        float amax = 0.0f;
+        for (int j = 0; j < QKA; ++j) amax = std::fmax(amax, std::fabs(xb[j]));
+        const float d = amax / 127.0f;
+        const uint16_t half_d = f2h(d);
+        const float inv = amax != 0.0f ? 127.0f / amax : 0.0f;
+        int8_t* q = a.q + chunk * QKA;
+        int32_t sum = 0;
+        for (int j = 0; j < QKA; ++j) {
+            float v = xb[j] * inv;
+            int iv = (int) std::round(v);
+            iv = iv < -127 ? -127 : (iv > 127 ? 127 : iv);
+            q[j] = (int8_t) iv;
+            sum += iv;
+        }
+        a.scale[chunk] = h2f((const uint8_t*) &half_d);
+        a.sum[chunk] = sum;
+        a.hx[chunk] = a.scale[chunk] * float(sum);
+#endif
     }
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
 /// 2-bit unpack via VPMULTISHIFTQB.
 ///
 /// ARGUMENT ORDER IS (control, data) AND WAS DETERMINED EMPIRICALLY (`bench/micro/probe_multishift.cpp`).
@@ -298,6 +339,47 @@ inline void row_dot_multi(const uint8_t* codes, const uint8_t* scales, const Act
     }
     for (int t = 0; t < NT; ++t) res[t] = hsum_ps(acc[t]) - corr[t];
 }
+#else
+inline float row_dot_portable(const uint8_t* codes, const uint8_t* scales, const ActQ& a, int nblocks) {
+    float result = 0.0f;
+    for (int b = 0; b < nblocks; ++b) {
+        const float d = h2f(scales + 2 * b);
+        float block_val = 0.0f;
+        for (int half = 0; half < 2; ++half) {
+            const int chunk = 2 * b + half;
+            const uint8_t* c = codes + b * 16 + half * 8;
+            const int8_t* xq = a.q + chunk * QKA;
+            int32_t dot = 0;
+            for (int k = 0; k < 8; ++k) {
+                const uint8_t byte = c[k];
+                dot += (int32_t)((byte >> 0) & 3) * (int32_t) xq[4 * k + 0];
+                dot += (int32_t)((byte >> 2) & 3) * (int32_t) xq[4 * k + 1];
+                dot += (int32_t)((byte >> 4) & 3) * (int32_t) xq[4 * k + 2];
+                dot += (int32_t)((byte >> 6) & 3) * (int32_t) xq[4 * k + 3];
+            }
+            block_val += a.scale[chunk] * float(dot) - a.hx[chunk];
+        }
+        result += d * block_val;
+    }
+    return result;
+}
+
+inline float row_dot(const uint8_t* codes, const uint8_t* scales, const ActQ& a, int nblocks) {
+    return row_dot_portable(codes, scales, a, nblocks);
+}
+
+inline float row_dot_oracle(const uint8_t* codes, const uint8_t* scales, const ActQ& a, int nblocks) {
+    return row_dot_portable(codes, scales, a, nblocks);
+}
+
+template<int NT>
+inline void row_dot_multi(const uint8_t* codes, const uint8_t* scales, const ActQ* const* a, int nblocks,
+                          float* res) {
+    for (int t = 0; t < NT; ++t) {
+        res[t] = row_dot_portable(codes, scales, *a[t], nblocks);
+    }
+}
+#endif
 
 template<int NT>
 void expert_multi(const uint8_t* blob, const ActQ* const* a1, float* const* out, ExpertScratchMulti& ws) {
@@ -351,6 +433,7 @@ const char* CpuFeatures::reason() const {
 
 CpuFeatures cpu_features() {
     CpuFeatures f;
+#if defined(__x86_64__) || defined(_M_X64)
     int reg[4] = {0, 0, 0, 0};
 #if defined(_MSC_VER)
     __cpuid(reg, 0);
@@ -369,10 +452,18 @@ CpuFeatures cpu_features() {
     f.avx512vl = (ebx >> 31) & 1u;
     f.avx512_vnni = (ecx >> 11) & 1u;
     f.avx512_vbmi = (ecx >> 1) & 1u;
+#else
+    f.avx512f = 1;
+    f.avx512bw = 1;
+    f.avx512vl = 1;
+    f.avx512_vnni = 1;
+    f.avx512_vbmi = 1;
+#endif
     return f;
 }
 
 void cpu_require_expert_support() {
+#if defined(__x86_64__) || defined(_M_X64)
     const CpuFeatures f = cpu_features();
     if (f.usable()) return;
     std::fprintf(stderr,
@@ -381,6 +472,7 @@ void cpu_require_expert_support() {
                  "        The scalar fallback exists for tests only and is far too slow to decode with.\n",
                  f.reason());
     std::exit(1);
+#endif
 }
 
 void act_quant_q8_1(const float* x, int n, ActQ& a) {
@@ -389,6 +481,7 @@ void act_quant_q8_1(const float* x, int n, ActQ& a) {
         return;
     }
     a.nchunks = n / QKA;
+#if defined(__x86_64__) || defined(_M_X64)
     // Plan v0.3 P6: AVX-512, the same operations per element as the scalar loop below (max of |x|, one multiply,
     // +-0.5 away from zero, truncation, clamp), so the result is bitwise the scalar one.  The scalar loop took
     // ~22 us per 2560 values - 3.2 ms of every speculative round.
@@ -418,6 +511,7 @@ void act_quant_q8_1(const float* x, int n, ActQ& a) {
         }
         return;
     }
+#endif
     for (int k = 0; k < a.nchunks; ++k) {
         const float* xb = x + k * QKA;
         float amax = 0.f;
@@ -553,6 +647,7 @@ void s2_expert_down_rows_multi(const uint8_t* blob, const ActQ* const* a2, int n
 // 64 weights, interleaved), which ggml-cpu computes with a scalar loop on x86.  This is `row_dot_multi_z` with
 // the block stride of the GGUF layout: the same unpack, the same VNNI dot, the same correction.
 namespace {
+#if defined(__x86_64__) || defined(_M_X64)
 template<int NT>
 inline void q2g_row_multi(const uint8_t* row, const ActQ* const* a, int nblocks, float* res) {
     __m512 acc[NT], corr[NT];
@@ -584,6 +679,34 @@ inline void q2g_row_multi(const uint8_t* row, const ActQ* const* a, int nblocks,
     }
     for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(acc[t]) - _mm512_reduce_add_ps(corr[t]);
 }
+#else
+template<int NT>
+inline void q2g_row_multi(const uint8_t* row, const ActQ* const* a, int nblocks, float* res) {
+    for (int t = 0; t < NT; ++t) res[t] = 0.0f;
+    for (int b = 0; b < nblocks; ++b) {
+        const float d = h2f(row + (size_t) b * 18);
+        const uint8_t* c = row + (size_t) b * 18 + 2;
+        for (int t = 0; t < NT; ++t) {
+            float block_val = 0.0f;
+            for (int half = 0; half < 2; ++half) {
+                const int chunk = 2 * b + half;
+                const uint8_t* hc = c + half * 8;
+                const int8_t* xq = a[t]->q + chunk * QKA;
+                int32_t dot = 0;
+                for (int k = 0; k < 8; ++k) {
+                    const uint8_t byte = hc[k];
+                    dot += (int32_t)((byte >> 0) & 3) * (int32_t) xq[4 * k + 0];
+                    dot += (int32_t)((byte >> 2) & 3) * (int32_t) xq[4 * k + 1];
+                    dot += (int32_t)((byte >> 4) & 3) * (int32_t) xq[4 * k + 2];
+                    dot += (int32_t)((byte >> 6) & 3) * (int32_t) xq[4 * k + 3];
+                }
+                block_val += a[t]->scale[chunk] * float(dot) - a[t]->hx[chunk];
+            }
+            res[t] += d * block_val;
+        }
+    }
+}
+#endif
 template<int NT>
 void q2g_rows(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, float* const* out, int r0, int r1) {
     float res[NT];

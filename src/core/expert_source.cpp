@@ -42,6 +42,13 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach/mach_host.h>
+#include <mach/host_info.h>
+#include <mach/mach_init.h>
+#include <mach/vm_statistics.h>
+#include <sys/sysctl.h>
+#endif
 #endif
 
 // a 64-bit seek (as in pinned.cu): the 32-bit `fseek` wraps past 4 GiB, and the spelling differs per platform
@@ -223,6 +230,17 @@ bool available_memory_bytes(uint64_t& bytes) {
     status.dwLength = sizeof(status);
     if (!GlobalMemoryStatusEx(&status)) return false;
     bytes = (uint64_t) status.ullAvailPhys;
+    return bytes > 0;
+#elif defined(__APPLE__)
+    vm_statistics64_data_t vm_stat;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm_stat, &count) != KERN_SUCCESS) {
+        return false;
+    }
+    vm_size_t page_size = 0;
+    host_page_size(mach_host_self(), &page_size);
+    uint64_t available_pages = (uint64_t)vm_stat.free_count + (uint64_t)vm_stat.inactive_count + (uint64_t)vm_stat.purgeable_count;
+    bytes = available_pages * (uint64_t)page_size;
     return bytes > 0;
 #elif defined(__linux__)
     // MemAvailable includes reclaimable page cache, unlike _SC_AVPHYS_PAGES.

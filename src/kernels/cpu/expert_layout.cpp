@@ -5,11 +5,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#if defined(__x86_64__) || defined(_M_X64)
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
 #else
 #include <cpuid.h>
+#endif
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
 #endif
 #include <fstream>
 #include <sstream>
@@ -21,6 +25,7 @@ ExpertLayout g_layout;
 
 const ExpertLayout& expert_layout() { return g_layout; }
 
+#if defined(__x86_64__) || defined(_M_X64)
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
@@ -84,10 +89,21 @@ bool cpu_avx2_ok() {
     }();
     return ok;
 }
+#else
+bool cpu_avx512_ok() { return false; }
+bool cpu_avx2_ok() { return false; }
+#endif
 
 std::string cpu_name() {
+#if defined(__APPLE__)
+    char buf[128] = {};
+    size_t sz = sizeof(buf);
+    if (sysctlbyname("machdep.cpu.brand_string", buf, &sz, nullptr, 0) == 0 && sz > 0) {
+        return std::string(buf);
+    }
+    return "Apple Silicon";
+#elif defined(_MSC_VER)
     unsigned r[12] = {};
-#if defined(_MSC_VER)
     int x[4];
     __cpuid(x, (int) 0x80000000u);
     if ((unsigned) x[0] < 0x80000004u) return "unknown";
@@ -95,17 +111,25 @@ std::string cpu_name() {
         __cpuid(x, (int) (0x80000002u + i));
         for (int j = 0; j < 4; ++j) r[i * 4 + j] = (unsigned) x[j];
     }
-#else
-    unsigned a = 0, b = 0, c = 0, d = 0;
-    __cpuid(0x80000000u, a, b, c, d);
-    if (a < 0x80000004u) return "unknown";
-    for (unsigned i = 0; i < 3; ++i) __cpuid(0x80000002u + i, r[i * 4], r[i * 4 + 1], r[i * 4 + 2], r[i * 4 + 3]);
-#endif
     char s[49] = {};
     std::memcpy(s, r, 48);
     std::string name(s);
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
+#elif defined(__x86_64__) || defined(_M_X64)
+    unsigned r[12] = {};
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    __cpuid(0x80000000u, a, b, c, d);
+    if (a < 0x80000004u) return "unknown";
+    for (unsigned i = 0; i < 3; ++i) __cpuid(0x80000002u + i, r[i * 4], r[i * 4 + 1], r[i * 4 + 2], r[i * 4 + 3]);
+    char s[49] = {};
+    std::memcpy(s, r, 48);
+    std::string name(s);
+    const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
+    return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
+#else
+    return "ARM64";
+#endif
 }
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,

@@ -6,6 +6,8 @@
 // the weight scale times the chunk's `hx` (the -1 code offset); the quantizer is the scalar rule, bit for bit.
 #include "strata/kernels/cpu/expert.hpp"
 
+#if defined(__x86_64__) || defined(_M_X64)
+
 #include <immintrin.h>
 
 #include <cmath>
@@ -128,3 +130,20 @@ void act_quant_q8_1_avx2(const float* x, int n, ActQ& a) {
 }
 
 }  // namespace strata::kernels::cpu
+
+#else
+
+namespace strata::kernels::cpu {
+
+void q2_0_gguf_rows_multi_avx2(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                               float* const* out, int r0, int r1) {
+    q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+}
+
+void act_quant_q8_1_avx2(const float* x, int n, ActQ& a) {
+    act_quant_q8_1(x, n, a);
+}
+
+}  // namespace strata::kernels::cpu
+
+#endif

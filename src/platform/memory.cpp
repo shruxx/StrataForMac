@@ -10,6 +10,9 @@
 #else
 #include <sys/mman.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 #endif
 
 namespace strata::platform {
@@ -130,6 +133,12 @@ bool gpu_shared_memory_budget(const void*, uint64_t& budget, uint64_t& usage, st
 }
 
 uint64_t total_physical_memory() {
+#if defined(__APPLE__)
+    int mib[2] = {CTL_HW, HW_MEMSIZE};
+    uint64_t mem = 0;
+    size_t len = sizeof(mem);
+    if (sysctl(mib, 2, &mem, &len, nullptr, 0) == 0) return mem;
+#endif
     const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
     return pages > 0 && page > 0 ? (uint64_t) pages * (uint64_t) page : 0;
 }

@@ -59,6 +59,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
+DARWIN = platform.system() == "Darwin"
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  A revision the repository no longer has falls back to its current files, with a message (download()).
@@ -281,9 +282,17 @@ def _memory_status():
 def ram_gb():
     if WIN:
         return _memory_status().ullTotalPhys / 2**30
-    for line in open("/proc/meminfo"):
-        if line.startswith("MemTotal"):
-            return int(line.split()[1]) * 1024 / 2**30
+    if DARWIN:
+        try:
+            return int(out(["sysctl", "-n", "hw.memsize"]).strip()) / 2**30
+        except Exception:
+            pass
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemTotal"):
+                return int(line.split()[1]) * 1024 / 2**30
+    except OSError:
+        pass
     return 0.0
 
 
@@ -307,6 +316,13 @@ def cpu_info():
         n = out(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).Name"]).strip()
         name = n or name
         avx512 = bool(pf(41)) and _cpuid_avx512_full()
+    elif DARWIN:
+        try:
+            name = out(["sysctl", "-n", "machdep.cpu.brand_string"]).strip() or name
+        except Exception:
+            pass
+        if platform.machine() == "arm64":
+            avx2 = True  # Apple Silicon ARM NEON SIMD replaces AVX2
     else:
         try:
             txt = open("/proc/cpuinfo").read()
@@ -395,6 +411,29 @@ def gpus():
         except ValueError:
             continue
     return found
+
+
+def apple_silicon_gpus() -> list[dict]:
+    """Apple Silicon integrated GPU with Unified Memory on macOS."""
+    if not DARWIN or platform.machine() != "arm64":
+        return []
+    name, _, _ = cpu_info()
+    ram = ram_gb()
+    cores = ""
+    try:
+        s = out(["system_profiler", "SPDisplaysDataType"])
+        match = re.search(r"Total Number of Cores:\s*(\d+)", s)
+        if match:
+            cores = f" ({match.group(1)} GPU cores)"
+    except Exception:
+        pass
+    return [{
+        "index": 0,
+        "name": f"{name}{cores}",
+        "vram_gb": ram,
+        "arch": "apple_silicon",
+        "driver": "Metal 4",
+    }]
 
 
 GPU_PICK = None                                         # --gpu N (issue #51); None: the card with the most VRAM
@@ -1962,6 +2001,46 @@ def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:
     return vision
 
 
+def build_engine_macos(vision="none") -> Path:
+    eng = ROOT / "engine"
+    eng.mkdir(exist_ok=True)
+    stamp = eng / "BUILD.json"
+    say("  Building Strata engine and tools for macOS (Apple Silicon) ...")
+    build_dir = ROOT / "build"
+    env = os.environ.copy()
+    if "DEVELOPER_DIR" not in env:
+        env["DEVELOPER_DIR"] = "/Library/Developer/CommandLineTools"
+    cmake_cmd = ["cmake", "-B", str(build_dir), "-DSTRATA_BUILD_TESTS=OFF"]
+    subprocess.run(cmake_cmd, cwd=str(ROOT), check=True, env=env)
+    targets = ["strata-gguf", "strata-plan", "strata-dequant", "strata_kernels_cpu"]
+    build_cmd = ["cmake", "--build", str(build_dir), "--target", *targets]
+    subprocess.run(build_cmd, cwd=str(ROOT), check=True, env=env)
+    for target in ["strata-gguf", "strata-plan", "strata-dequant"]:
+        tpath = build_dir / target
+        if tpath.exists():
+            shutil.copy2(tpath, eng / target)
+    if vision != "none":
+        say("  Building vision encoder for macOS ...")
+        vbuild = ROOT / "build-vision"
+        llama_dir = build_dir / "_deps" / "strata_llamacpp-src"
+        cmake_vcmd = ["cmake", "-S", str(ROOT / "tools" / "vision"), "-B", str(vbuild),
+                      "-DCMAKE_BUILD_TYPE=Release", f"-DLLAMA_DIR={llama_dir}"]
+        subprocess.run(cmake_vcmd, cwd=str(ROOT), check=True, env=env)
+        subprocess.run(["cmake", "--build", str(vbuild), "--target", "strata-vision"], cwd=str(ROOT), check=True, env=env)
+        if (vbuild / "bin" / VEXE).exists():
+            shutil.copy2(vbuild / "bin" / VEXE, eng / VEXE)
+    stamp.write_text(json.dumps({
+        "source": "local",
+        "version": source_version(),
+        "backend": "macos_apple_silicon",
+        "archs": ["arm64"],
+        "vision": vision,
+        "src": source_hash(ENGINE_SOURCES),
+    }, indent=1))
+    ok(f"engine ready: {eng}")
+    return eng
+
+
 def build_engine(gpu, vision, yes, llama) -> Path:
     """Compile the engine (and, for images, the encoder) for this GPU; the results go to engine/.  A compiled
     engine whose source files changed since (a `git pull`) is compiled again: only the changed files, a few minutes."""
@@ -3072,12 +3151,19 @@ def main() -> int:
 
     # ---- 1. the PC
     step(1, "checking your PC")
+    apple = apple_silicon_gpus()
+    is_mac = bool(apple)
     found = gpus()
     amd = amd_gpus()
     nv_ok = any(gpu_problem(g) is None for g in found)
     amd_ok = [g for g in amd if amd_problem(g) is None]
     hip = a.backend == "hip" or (a.backend is None and not nv_ok and bool(amd_ok))
-    if a.backend is None and nv_ok and amd_ok:
+    if is_mac:
+        gpu = apple[0]
+        chosen = [gpu]
+        multi = []
+        ok(f"GPU: {gpu['name']} (Unified Memory: {gpu['vram_gb']:.1f} GB, {gpu['driver']})")
+    elif a.backend is None and nv_ok and amd_ok:
         # both kinds of card: asked (a first run on such a PC used to take NVIDIA without mentioning the Radeon)
         say()
         say("  This PC has NVIDIA and AMD cards Strata can use:")
@@ -3089,7 +3175,9 @@ def main() -> int:
         hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
         if a.check and not hip:
             say(f"  (the AMD card: {'START-HERE.bat' if WIN else './setup.sh'} --backend hip)")
-    if hip:                                            # AMD: compiled here; Windows: ready-made
+    if is_mac:
+        pass
+    elif hip:                                            # AMD: compiled here; Windows: ready-made
         if WIN and a.gpus:
             fail("several AMD cards sharing one model (--gpus) is Linux-only for now", "use one card: --gpu N")
         say("  Your AMD GPUs:" if amd else "  No AMD GPU found (" + ("Windows lists no AMD display adapter)." if WIN
@@ -3164,8 +3252,9 @@ def main() -> int:
         warn(f"Windows' page file is {pf:.1f} GB: the graphics card's memory needs room there too (issue #60), so "
              "the model may not start or may use less VRAM. Set it to \"System managed\": System > About > "
              "Advanced system settings > Performance > Advanced > Virtual memory")
-    ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
-    if not avx2:
+    cpu_desc = "Apple Silicon NEON + Accelerate" if is_mac else ('AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2')
+    ok(f"CPU: {cpu} ({cpu_desc})")
+    if not avx2 and not is_mac:
         fail("this CPU has no AVX2; Strata needs at least AVX2")
     if a.check:
         say()
@@ -3193,7 +3282,8 @@ def main() -> int:
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else ""))
-        family = fams[int(ask("Which model?", [str(i) for i in range(1, len(fams) + 1)], "1", a.yes)) - 1]
+        rec_fam = str(fams.index("coder") + 1) if (is_mac and ram <= 36 and "coder" in fams) else "1"
+        family = fams[int(ask("Which model?", [str(i) for i in range(1, len(fams) + 1)], rec_fam, a.yes)) - 1]
     fam = FAMILIES[family]
     ok(f"model: {fam['title']}")
     if fam.get("license"):
@@ -3218,7 +3308,10 @@ def main() -> int:
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, gpu['vram_gb']):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, gpu["vram_gb"]) else "the rest from the SSD)"))
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
-    rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
+    if family == "coder" and "IQ1_M" in names:
+        rec = str(names.index("IQ1_M") + 1)
+    else:
+        rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
     budget, q4_split = None, False
     if MODELS[model].get("budget"):
@@ -3424,7 +3517,9 @@ def main() -> int:
     step(4, "the Strata engine")
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
-    if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
+    if is_mac:
+        eng = build_engine_macos(vision)
+    elif hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
         eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
         if eng is None:
             fail("no ready-made AMD engine for this Strata version" + (" (--build)" if a.build else ""),
@@ -3434,7 +3529,7 @@ def main() -> int:
         a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
     else:
         eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision)
-    if eng is not None and not hip and json.loads((eng / "BUILD.json").read_text()).get("source") != "local":
+    if eng is not None and not hip and not is_mac and json.loads((eng / "BUILD.json").read_text()).get("source") != "local":
         pip_install(CUDA_WHEELS, "NVIDIA CUDA libraries (cuBLAS, CUDA runtime; ~0.4 GB)")
         if vision != "none" and not (eng / VEXE).exists():
             warn("the ready-made engine has no image encoder: compiling it")

@@ -11,6 +11,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach_host.h>
+#include <mach/host_info.h>
+#include <mach/mach_init.h>
+#include <mach/vm_statistics.h>
 #endif
 
 namespace strata::core {
@@ -39,6 +44,16 @@ std::optional<uint64_t> conversation_available_memory() {
     status.dwLength = sizeof status;
     if (GlobalMemoryStatusEx(&status)) return status.ullAvailPhys;
     return {};
+#elif defined(__APPLE__)
+    vm_statistics64_data_t vm_stat;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm_stat, &count) != KERN_SUCCESS) {
+        return {};
+    }
+    vm_size_t page_size = 0;
+    host_page_size(mach_host_self(), &page_size);
+    uint64_t available_pages = (uint64_t)vm_stat.free_count + (uint64_t)vm_stat.inactive_count + (uint64_t)vm_stat.purgeable_count;
+    return available_pages * (uint64_t)page_size;
 #elif defined(__linux__)
     std::ifstream meminfo("/proc/meminfo");
     if (!meminfo) return {};

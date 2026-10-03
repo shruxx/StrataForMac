@@ -868,7 +868,7 @@ def child_env(cfg: dict) -> dict:
         env[str(k)] = str(v)
     dirs = [d for d in cfg.get("lib_dirs") or [] if Path(d).is_dir()]
     if dirs:
-        var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
+        var = "PATH" if os.name == "nt" else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
     return env
 

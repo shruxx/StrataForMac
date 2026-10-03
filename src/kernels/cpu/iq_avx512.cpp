@@ -10,6 +10,8 @@
 // model has IQ1_M expert rows: the 'Coder IQ1_M' pack's gate/up are IQ2_S / IQ3_XXS / IQ3_S).
 #include "strata/kernels/cpu/iq_avx512.hpp"
 
+#if defined(__x86_64__) || defined(_M_X64)
+
 #define GGML_COMMON_DECL_CPP
 #define GGML_COMMON_IMPL_CPP
 #include "ggml-common.h"
@@ -271,3 +273,15 @@ void iq512_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
 }
 
 }  // namespace strata::kernels::cpu
+
+#else
+
+namespace strata::kernels::cpu {
+
+bool iq512_supported(int) noexcept { return false; }
+void iq512_gu_rows(int, const uint8_t*, size_t, size_t, int, const void* const*, int, float* const*, int, int) {}
+void iq512_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {}
+
+}  // namespace strata::kernels::cpu
+
+#endif
