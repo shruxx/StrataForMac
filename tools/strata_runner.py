@@ -116,6 +116,31 @@ def parse_args(argv: list[str]) -> dict:
     return cfg
 
 
+def llama_server_cmd(llama_bin, model_path, max_context: int, port: int, threads: int, kv: str) -> list[str]:
+    """llama-server's command line.  No -ngl: an explicit layer count switches off llama.cpp's --fit, which otherwise
+    keeps attention and the dense weights on the Metal GPU and moves only the sparse MoE experts of as many layers as
+    needed to the CPU side when the whole model does not fit the GPU's working set (Strata's expert cache, the
+    llama.cpp way).  A model that fits stays fully on the GPU.  With -ngl 999 a model larger than the working set
+    (Kolibri-1 Q4_K_M, 47.5 GB, on a 48 GB Mac) was put on the GPU whole."""
+    cmd = [
+        str(llama_bin),
+        "-m", str(model_path),
+        "-c", str(max_context),
+        "--fit", "on",
+        "--port", str(port),
+        "--host", "127.0.0.1",
+        "--parallel", "1",
+        "--threads", str(threads),
+    ]
+    if kv == "int8":
+        cmd += ["-ctk", "q8_0", "-ctv", "q8_0"]
+    elif kv == "k8v4":
+        cmd += ["-ctk", "q8_0", "-ctv", "q4_0"]
+    elif kv == "q4":
+        cmd += ["-ctk", "q4_0", "-ctv", "q4_0"]
+    return cmd
+
+
 def run_serve(cfg: dict):
     llama_bin = find_llama_server()
     if not llama_bin:
@@ -132,24 +157,8 @@ def run_serve(cfg: dict):
     threads = cfg["threads"] or get_perf_cores()
     port = get_free_port()
 
-    cmd = [
-        str(llama_bin),
-        "-m", str(model_path),
-        "-c", str(max_context),
-        "-ngl", "999",  # Full offload to Apple Silicon Metal GPU
-        "--port", str(port),
-        "--host", "127.0.0.1",
-        "--parallel", "1",
-        "--threads", str(threads),
-    ]
-
+    cmd = llama_server_cmd(llama_bin, model_path, max_context, port, threads, cfg.get("kv", "int8"))
     kv = cfg.get("kv", "int8")
-    if kv == "int8":
-        cmd += ["-ctk", "q8_0", "-ctv", "q8_0"]
-    elif kv == "k8v4":
-        cmd += ["-ctk", "q8_0", "-ctv", "q4_0"]
-    elif kv == "q4":
-        cmd += ["-ctk", "q4_0", "-ctv", "q4_0"]
 
     sys.stderr.write(f"[strata] starting Metal engine on port {port} (model: {Path(model_path).name}, ctx: {max_context}, threads: {threads}) ...\n")
     sys.stderr.flush()

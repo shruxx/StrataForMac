@@ -41,6 +41,15 @@ class TestStrataRunner(unittest.TestCase):
         self.assertEqual(cfg["max_context"], 4096)
         self.assertEqual(cfg["kv"], "int8")
 
+    def test_server_cmd_lets_llama_cpp_fit(self):
+        # an explicit -ngl switches llama.cpp's --fit off: a model larger than the Metal working set then fails
+        cmd = strata_runner.llama_server_cmd("llama-server", "m.gguf", 131072, 8080, 8, "int8")
+        self.assertNotIn("-ngl", cmd)
+        self.assertNotIn("--n-gpu-layers", cmd)
+        self.assertEqual(cmd[cmd.index("--fit") + 1], "on")
+        self.assertEqual(cmd[cmd.index("-c") + 1], "131072")
+        self.assertEqual(cmd[cmd.index("-ctk") + 1], "q8_0")
+
     def test_perf_cores(self):
         cores = strata_runner.get_perf_cores()
         self.assertIsInstance(cores, int)

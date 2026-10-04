@@ -69,6 +69,8 @@ The macOS port replaces Linux- and Windows-specific APIs with native Darwin and 
 - On Apple Silicon Macs, inference is accelerated natively via Apple Metal compute shaders with Unified Memory Architecture (UMA).
 - `engine/strata` implements the resident Strata Engine IPC protocol (`--serve`, `GEN`, `T`, `DONE`, `STOP`, `QUIT`) interfacing with `serve/server.py`.
 - Supports full offloading of active weights and KV cache to Apple Silicon Metal GPU cores for high token throughput across both Qwen and Kolibri-1 MoE models.
+- The runner starts `llama-server` with `--fit on` and no `-ngl`: a model that fits the GPU's working set runs fully on it; one that does not (Kolibri-1 Q4_K_M, 47.5 GB, on a 48 GB Mac) keeps attention and the dense weights on the GPU and moves the MoE experts of as many layers as needed to the CPU side.
+- llama.cpp has no `kolibri1` architecture yet: setup applies `third_party/patches/kolibri1-llama.cpp.patch` (from the [Kolibri-1 GGUF](https://huggingface.co/Hob-forge/Kolibri-1-GGUF), without its Python converter) before building `llama-server`. Without it the engine stops with "unknown model architecture: 'kolibri1'".
 
 ---
 
