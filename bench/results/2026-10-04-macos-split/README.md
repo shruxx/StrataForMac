@@ -29,3 +29,31 @@ is too small to pay for the switch.  For a large model that is a question for ea
 
 `--fit-target 25600` (fit planned 1420 MiB for the GPU): stock llama.cpp mapped 3961 MiB into the GPU's buffer (the
 file from the GPU's first tensor to its last, the CPU's experts included), with the patch 1420 MiB.
+
+## Kolibri-1 Q4_K_M, a model larger than the memory
+
+Same Mac (M1 Max, 32 GB), Kolibri-1 Q4_K_M (47.5 GB, 50 layers + output), `-c 4096`, `--no-repack`, 8 threads,
+96 tokens after a 9-token prompt, median of three runs after a warm-up.  "SSD" is the pages read per output token
+(`vm_stat` Pageins, 16 KiB each) during the measured runs.
+
+| How | GPU weights | tok/s | MB per token from the SSD |
+|---|---:|---:|---:|
+| `-ngl 0` | 0 | 25.73 | 0.5 |
+| `-ngl 6` | 4.9 GiB | 26.06 | 9.3 |
+| `-ngl 12` | 10.2 GiB | 7.95 - 8.23 | 75.5 - 81.9 |
+| `--fit on --fit-target 12902` (14.4 GiB budget, experts split) | 13.5 GiB | 5.15 | 123.1 |
+| `-ngl 12` with an `madvise(MADV_WILLNEED)` hint for the experts of each CPU MoE op | 10.2 GiB | 6.86 | 114.4 |
+| `--fit` split with that hint | 13.5 GiB | 4.93 | 131.9 |
+
+Every GPU layer holds all 384 experts of its layer and takes that memory from the page cache the CPU's experts are
+read through; with few GPU layers the experts the replies use stay in the page cache.  The `MADV_WILLNEED` hint made
+the kernel read more than the op used and was dropped.
+
+The runner's layer tuner (`tools/strata_runner.py`, LayerTuner), 96-token requests 5 s apart, minimum 128 tokens and 3 s
+idle for this run (256 and 20 s by default):
+
+| GPU layers | tok/s | MB per token from the SSD | |
+|---:|---:|---:|---|
+| 5 (the start: 20% of 24 GiB) | 30.95 | 1.05 | SSD quiet: one step up |
+| 9 | 30.49 | 0.98 | not faster: the other way |
+| 1 | 31.65 | 0.39 | within 3% of the fastest with the fewest GPU layers: kept |

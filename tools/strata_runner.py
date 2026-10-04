@@ -54,13 +54,23 @@ def get_free_port() -> int:
         return s.getsockname()[1]
 
 
+def fast_cores(levels: list[tuple[str, int]]) -> int:
+    """The cores of every performance level macOS does not call "Efficiency" (hw.perflevelN.name): the P cores on
+    M1-M4; on a Mac whose second level is fast too, those as well.  0 when none is known."""
+    return sum(n for name, n in levels if name.lower() != "efficiency" and n > 0)
+
+
 def get_perf_cores() -> int:
-    """Detect performance cores on macOS Apple Silicon."""
+    """The threads for llama-server: the Mac's fast cores (fast_cores)."""
     try:
-        out = subprocess.check_output(["sysctl", "-n", "hw.perflevel0.physicalcpu"],
-                                      stderr=subprocess.DEVNULL).decode().strip()
-        if out.isdigit() and int(out) > 0:
-            return int(out)
+        def ctl(key):
+            return subprocess.check_output(["sysctl", "-n", key], stderr=subprocess.DEVNULL).decode().strip()
+        levels = []
+        for i in range(int(ctl("hw.nperflevels") or 0)):
+            count = ctl(f"hw.perflevel{i}.physicalcpu")
+            levels.append((ctl(f"hw.perflevel{i}.name"), int(count) if count.isdigit() else 0))
+        if fast_cores(levels):
+            return fast_cores(levels)
     except Exception:
         pass
     return max(1, (os.cpu_count() or 4) // 2 if (os.cpu_count() or 4) > 4 else (os.cpu_count() or 4))
@@ -216,6 +226,120 @@ def gpu_layer_count(blocks: list[int], head: int, weight_budget: int) -> int:
     return n
 
 
+# a model larger than the memory: where the layer tuner starts, as a share of the memory left after OS_RESERVE for
+# the GPU's layers.  Every GPU layer holds all its experts and takes that memory from the page cache the CPU-side
+# experts are read through: Kolibri-1 Q4_K_M on a 32 GB M1 Max, 0 / 6 / 12 GPU layers (0 / 4.9 / 10.2 GiB):
+# 25.7 / 26.1 / 8.2 tok/s, 0.5 / 9.3 / 81.9 MB per token read from the SSD (bench/results/2026-10-04-macos-split)
+START_GPU_SHARE = 0.2
+TUNE_FILE = ROOT / "engine" / "metal-tune.json"
+TUNE_MIN_TOKENS = 256          # decode tokens measured at one layer count before the tuner decides
+TUNE_IDLE_S = 20.0             # quiet seconds before llama-server restarts with another layer count
+TUNE_MAX_RESTARTS = 6          # per start of the engine
+TUNE_GAIN = 1.03               # a layer count must be this much faster to count as better
+
+
+def process_pageins(pid: int) -> int | None:
+    """The pages a process read from disk so far (proc_pid_rusage), None when unknown."""
+    try:
+        import ctypes
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib")
+
+        class RusageInfoV2(ctypes.Structure):
+            _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (
+                "user", "system", "pkg_idle", "interrupt", "pageins", "wired", "resident", "phys", "start", "exit",
+                "child_user", "child_system", "child_pkg_idle", "child_interrupt", "child_pageins", "child_elapsed",
+                "diskio_read", "diskio_written")]
+        r = RusageInfoV2()
+        return int(r.pageins) if lib.proc_pid_rusage(pid, 2, ctypes.byref(r)) == 0 else None
+    except Exception:
+        return None
+
+
+class LayerTuner:
+    """Finds the GPU layer count that writes fastest on this Mac, from the replies themselves.
+
+    Each layer count is measured over TUNE_MIN_TOKENS decode tokens (the first reply after a start is the warm-up and
+    not counted).  From the start count it tries one step towards more GPU layers when the SSD is quiet (< 2 MB read
+    per token), else towards fewer; it keeps going while that is faster, then goes back to the fastest and stops.
+    Results are kept in TUNE_FILE per model and memory size, so the next start begins at the fastest count."""
+
+    def __init__(self, key: str, n_layers: int, start: int, path: Path | None = None):
+        self.key, self.n, self.path = key, n_layers, path or TUNE_FILE
+        self.step = max(2, n_layers // 12)
+        self.results: dict[int, tuple[float, float]] = {}
+        self.done, self.direction, self.flipped = False, 0, False
+        saved = self._load().get(key) or {}
+        for k, v in (saved.get("results") or {}).items():
+            self.results[int(k)] = (float(v[0]), float(v[1]))
+        self.done = bool(saved.get("done"))
+        self.current = int(saved["best"]) if "best" in saved else max(0, min(start, n_layers))
+        self.restarts = 0
+        self._reset()
+
+    def _load(self) -> dict:
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _save(self):
+        data = self._load()
+        best = self.best()
+        data[self.key] = {"best": best if best is not None else self.current, "done": self.done,
+                          "results": {str(k): [round(v[0], 2), round(v[1], 2)] for k, v in sorted(self.results.items())}}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _reset(self):
+        self.tokens, self.ms, self.pages, self.warm = 0, 0.0, 0, False
+
+    def best(self) -> int | None:
+        if not self.results:
+            return None
+        top = max(v[0] for v in self.results.values())
+        # the fewest GPU layers within TUNE_GAIN of the fastest: more memory stays for everything else
+        return min(k for k, v in self.results.items() if v[0] * TUNE_GAIN >= top)
+
+    def add(self, tokens: int, ms: float, pages: int | None):
+        """One finished reply at the current layer count."""
+        if self.done or tokens < 16 or ms <= 0:
+            return
+        if not self.warm:                           # the first reply after a start fills the caches
+            self.warm = True
+            return
+        self.tokens, self.ms, self.pages = self.tokens + tokens, self.ms + ms, self.pages + (pages or 0)
+
+    def next_layers(self) -> int | None:
+        """The layer count to restart with, when the current one is measured and another is worth trying."""
+        if self.done or self.tokens < TUNE_MIN_TOKENS or self.restarts >= TUNE_MAX_RESTARTS:
+            return None
+        tok_s, mb = self.tokens / (self.ms / 1000.0), self.pages * 16384 / 1e6 / self.tokens
+        self.results[self.current] = (tok_s, mb)
+        self._reset()
+        best = self.best()
+        if self.direction == 0:                     # first decision: towards the GPU while the SSD is quiet
+            self.direction = 1 if mb < 2.0 and self.current < self.n else -1
+        elif best != self.current:                  # that step was not faster: the other way once, else done
+            if self.flipped:
+                self.done = True
+            else:
+                self.flipped, self.direction = True, -self.direction
+        nxt = None if self.done else (best if best is not None else self.current) + self.direction * self.step
+        if nxt is not None and (nxt < 0 or nxt > self.n or nxt in self.results):
+            nxt = None
+            self.done = True
+        if self.done:
+            nxt = best if best != self.current else None
+        self._save()
+        if nxt is not None:
+            self.restarts += 1
+            self.current = nxt
+        return nxt
+
+
 def fit_margin_mib(working_set: int, budget: int) -> int:
     """--fit-target: the MiB --fit leaves free of the working set so that the GPU holds at most `budget` (1024,
     llama.cpp's default, when that is less)."""
@@ -267,7 +391,7 @@ def run_serve(cfg: dict):
 
     max_context = cfg["max_context"]
     threads = cfg["threads"] or get_perf_cores()
-    port = get_free_port()
+    kv = cfg.get("kv", "int8")
 
     # the GPU's share of the shared memory (gpu_budget); a margin in the config's "env" (LLAMA_ARG_FIT_TARGET) or
     # an explicit budget (STRATA_GPU_BUDGET_GB) wins
@@ -277,62 +401,58 @@ def run_serve(cfg: dict):
         budget = int(float(os.environ["STRATA_GPU_BUDGET_GB"]) * GIB)
     elif not os.environ.get("LLAMA_ARG_FIT_TARGET") and ram and working_set:
         budget = gpu_budget(ram, working_set, model)
+    no_repack = bool(ram) and pages_from_ssd(ram, model)
     # a model larger than the budget: whole layers on the GPU, the first ones on the CPU.  --fit instead keeps
     # every layer's attention on the GPU and moves the experts of many layers to the CPU, and the switches between
     # them cost more than the work: OLMoE-1B-7B Q4_K_M on an M1 Max, 1.3 GiB of weights on the GPU, 55.8 tok/s with
-    # --fit, 92.8 with -ngl 5 (bench/results/2026-10-04-macos-split)
-    fit_target, gpu_layers, sizes = None, None, None
-    if os.environ.get("STRATA_GPU_LAYERS", "").strip().isdigit():     # measured with tools/mac_split_bench.py
+    # --fit, 92.8 with -ngl 5 (bench/results/2026-10-04-macos-split).  How many is found by LayerTuner.
+    fit_target, gpu_layers, sizes, tuner = None, None, None, None
+    if os.environ.get("STRATA_GPU_LAYERS", "").strip().isdigit():     # set by hand: no tuning
         gpu_layers, sizes = int(os.environ["STRATA_GPU_LAYERS"]), layer_sizes(model_path)
     elif budget is not None and model + CTX_ALLOWANCE > budget:
         sizes = layer_sizes(model_path)
         if sizes:
-            gpu_layers = gpu_layer_count(sizes[0], sizes[1], budget - CTX_ALLOWANCE)
+            weights = (START_GPU_SHARE * max(ram - OS_RESERVE, 0) if no_repack else budget - CTX_ALLOWANCE)
+            gpu_layers = gpu_layer_count(sizes[0], sizes[1], int(weights))
+            if os.environ.get("STRATA_TUNE", "1") != "0":
+                tuner = LayerTuner(f"{Path(model_path).name}:{model}:{ram // GIB}", len(sizes[0]) + 1, gpu_layers)
+                gpu_layers = tuner.current
     if gpu_layers is None and budget is not None and working_set:
         fit_target = fit_margin_mib(working_set, budget)
     if ram and working_set:
         how = (f"{gpu_layers} of {len(sizes[0]) + 1 if sizes else '?'} layers on the GPU" if gpu_layers is not None else
                f"GPU budget {budget / GIB:.1f} GiB" if budget is not None else "llama.cpp's own fit")
+        if tuner:
+            how += " (tuned)" if tuner.done else " (tuning: measures the replies, tries other counts while idle)"
         sys.stderr.write(f"[strata] memory: {ram / GIB:.0f} GiB shared, GPU working set {working_set / GIB:.1f} GiB, "
                          f"model {model / GIB:.1f} GiB -> {how}\n")
-    no_repack = bool(ram) and pages_from_ssd(ram, model)
-    cmd = llama_server_cmd(llama_bin, model_path, max_context, port, threads, cfg.get("kv", "int8"), fit_target,
-                           no_repack, gpu_layers)
-    kv = cfg.get("kv", "int8")
 
-    sys.stderr.write(f"[strata] starting Metal engine on port {port} (model: {Path(model_path).name}, ctx: {max_context}, threads: {threads}) ...\n")
-    sys.stderr.flush()
-
-    # Launch llama-server with output going to stderr (which server.py directs to the log)
-    server_proc = subprocess.Popen(
-        cmd,
-        cwd=str(ROOT),
-        stdout=sys.stderr,
-        stderr=sys.stderr,
-    )
-
-    # Wait for server to become healthy
-    health_url = f"http://127.0.0.1:{port}/health"
-    start_time = time.monotonic()
-    ready = False
-    while time.monotonic() - start_time < 300:
-        if server_proc.poll() is not None:
-            sys.stderr.write(f"[strata] llama-server exited prematurely with code {server_proc.returncode}\n")
-            sys.exit(1)
-        try:
-            req = urllib.request.Request(health_url, headers={"User-Agent": "StrataEngine/0.1"})
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                if resp.status == 200:
-                    ready = True
-                    break
-        except (urllib.error.URLError, OSError):
-            pass
-        time.sleep(0.2)
-
-    if not ready:
+    def start(layers):
+        """llama-server with `layers` GPU layers (None: --fit), once its /health answers; exits the runner if not."""
+        port = get_free_port()
+        cmd = llama_server_cmd(llama_bin, model_path, max_context, port, threads, kv, fit_target, no_repack, layers)
+        sys.stderr.write(f"[strata] starting Metal engine on port {port} (model: {Path(model_path).name}, "
+                         f"ctx: {max_context}, threads: {threads}) ...\n")
+        sys.stderr.flush()
+        proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=sys.stderr, stderr=sys.stderr)
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < 300:
+            if proc.poll() is not None:
+                sys.stderr.write(f"[strata] llama-server exited prematurely with code {proc.returncode}\n")
+                sys.exit(1)
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/health", headers={"User-Agent": "StrataEngine/0.1"})
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        return proc, port
+            except (urllib.error.URLError, OSError):
+                pass
+            time.sleep(0.2)
         sys.stderr.write("[strata] ERROR: timed out waiting for engine to be ready.\n")
-        server_proc.kill()
+        proc.kill()
         sys.exit(1)
+
+    server_proc, port = start(gpu_layers)
 
     # Initial handshake for server.py
     model_name = Path(model_path).stem
@@ -356,10 +476,24 @@ def run_serve(cfg: dict):
 
     active_resp_holder: list[any] = [None]
     stop_event = threading.Event()
+    pending, last_done = None, time.monotonic()
 
     try:
         while True:
-            line = cmd_queue.get()
+            try:
+                line = cmd_queue.get(timeout=1.0)
+            except queue.Empty:
+                if pending is not None and time.monotonic() - last_done >= TUNE_IDLE_S:
+                    # idle: restart llama-server with the next layer count (a request now waits for it)
+                    server_proc.terminate()
+                    try:
+                        server_proc.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        server_proc.kill()
+                        server_proc.wait()
+                    server_proc, port = start(pending)
+                    pending = None
+                continue
             if line is None:
                 break
             raw = line.strip()
@@ -371,7 +505,23 @@ def run_serve(cfg: dict):
                 # Not currently generating; acknowledge or ignore
                 continue
             if raw.startswith("GEN ") or raw.startswith("GENI "):
-                handle_generation(raw, port, cmd_queue, active_resp_holder, stop_event)
+                before = process_pageins(server_proc.pid) if tuner else None
+                result = handle_generation(raw, port, cmd_queue, active_resp_holder, stop_event)
+                last_done = time.monotonic()
+                if tuner and result:
+                    after = process_pageins(server_proc.pid)
+                    was, measured = tuner.current, dict(tuner.results)
+                    tuner.add(result[0], result[1], after - before if before is not None and after is not None else None)
+                    nxt = tuner.next_layers()
+                    if tuner.results != measured:            # a layer count was measured just now
+                        tok_s, mb = tuner.results[was]
+                        sys.stderr.write(f"[strata] layers: {was} on the GPU: {tok_s:.1f} tok/s, {mb:.1f} MB per token "
+                                         f"from the SSD" + (f" -> trying {nxt} when idle" if nxt is not None and
+                                                            not tuner.done else
+                                                            f" -> back to {nxt}, the fastest" if nxt is not None else
+                                                            " -> kept" if tuner.done else "") + "\n")
+                        sys.stderr.flush()
+                    pending = nxt
     finally:
         try:
             server_proc.terminate()
@@ -390,7 +540,9 @@ def report_error(message: str):
 
 
 def handle_generation(line: str, port: int, cmd_queue: queue.Queue,
-                      active_resp_holder: list[any], stop_event: threading.Event):
+                      active_resp_holder: list[any], stop_event: threading.Event) -> tuple[int, float] | None:
+    """One GEN: streams T lines and ends with DONE (or ERR).  Returns the reply's (decode tokens, decode ms) when it
+    finished on its own, for the layer tuner; None after STOP or an error."""
     parts = line.strip().split()
     cmd_name = parts[0]
     try:
@@ -492,7 +644,7 @@ def handle_generation(line: str, port: int, cmd_queue: queue.Queue,
             except Exception:
                 pass
         report_error(f"llama-server did not take the request: {detail}")
-        return
+        return None
 
     # Check for STOP in a background watcher or polling
     stopped = False
@@ -577,10 +729,11 @@ def handle_generation(line: str, port: int, cmd_queue: queue.Queue,
     elif failure or not finished:
         # without its final event the reply did not end normally (llama-server crashed or closed the stream)
         report_error(failure or f"llama-server ended the reply without finishing it ({generated_count} tokens)")
-        return
+        return None
 
     sys.stdout.write(f"DONE {generated_count} {prompt_n} {prompt_ms:.1f} {decode_ms:.1f} {finish_reason} 0 0 0\n")
     sys.stdout.flush()
+    return None if stopped else (generated_count, decode_ms)
 
 
 def main():

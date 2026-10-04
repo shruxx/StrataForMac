@@ -85,6 +85,54 @@ class TestStrataRunner(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--fit-target") + 1], "12288")
         self.assertNotIn("--no-repack", strata_runner.llama_server_cmd("llama-server", "m.gguf", 4096, 8080, 8, "int8"))
 
+    def tune(self, speed, start, path, n=51):
+        """Runs a LayerTuner against a speed curve (layers -> (tok/s, MB per token)) until it settles."""
+        t = strata_runner.LayerTuner("m", n, start, path)
+        visited = [t.current]
+        for _ in range(20):
+            if t.done:
+                break
+            tok_s, mb = speed(t.current)
+            t.add(64, 64 / tok_s * 1000, 0)                       # the warm-up reply, not counted
+            for _ in range(5):
+                t.add(64, 64 / tok_s * 1000, int(mb * 64 * 1e6 / 16384))
+            nxt = t.next_layers()
+            if nxt is not None:
+                visited.append(nxt)
+        return t, visited
+
+    def test_tuner_finds_few_gpu_layers_when_the_ssd_is_busy(self):
+        import tempfile
+        # Kolibri-1 on a 32 GB M1 Max: more GPU layers leave less page cache, and the SSD gets busy
+        curve = {0: (25.7, 0.5), 4: (26.0, 5), 8: (20.0, 30), 12: (8.2, 82)}
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "tune.json")
+            t, visited = self.tune(lambda n: curve.get(n, (5.0, 100)), 8, path)
+            self.assertTrue(t.done)
+            self.assertEqual(visited, [8, 4, 0])                  # down while faster; 0 is within 3% of 4
+            self.assertEqual(t.current, 0)
+            again = strata_runner.LayerTuner("m", 51, 8, path)   # the next start begins at the result
+            self.assertTrue(again.done)
+            self.assertEqual(again.current, 0)
+            self.assertIsNone(again.next_layers())
+
+    def test_tuner_goes_up_when_the_ssd_is_quiet_and_comes_back(self):
+        import tempfile
+        curve = {4: (20.0, 0.5), 8: (24.0, 0.8), 12: (23.5, 1.5)}
+        with tempfile.TemporaryDirectory() as d:
+            t, visited = self.tune(lambda n: curve.get(n, (10.0, 50)), 4, Path(d, "tune.json"))
+            self.assertTrue(t.done)
+            self.assertEqual(visited, [4, 8, 12, 8])              # up, up (no faster), back to the fastest
+            self.assertEqual(t.current, 8)
+
+    def test_tuner_tries_the_other_way_once(self):
+        import tempfile
+        curve = {8: (20.0, 0.5), 12: (15.0, 0.6), 4: (22.0, 3)}
+        with tempfile.TemporaryDirectory() as d:
+            t, visited = self.tune(lambda n: curve.get(n, (10.0, 50)), 8, Path(d, "tune.json"))
+            self.assertEqual(visited, [8, 12, 4, 0, 4])           # up failed, down helped, 0 slower: back to 4
+            self.assertEqual(t.current, 4)
+
     def test_model_bytes_counts_all_shards(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -93,6 +141,11 @@ class TestStrataRunner(unittest.TestCase):
             Path(d, "other.gguf").write_bytes(b"x" * 5)
             self.assertEqual(strata_runner.model_bytes(Path(d, "m-00001-of-00002.gguf")), 30)
             self.assertEqual(strata_runner.model_bytes(Path(d, "other.gguf")), 5)
+
+    def test_fast_cores(self):
+        self.assertEqual(strata_runner.fast_cores([("Performance", 8), ("Efficiency", 2)]), 8)    # M1 Max
+        self.assertEqual(strata_runner.fast_cores([("Super", 5), ("Performance", 10)]), 15)      # two fast levels
+        self.assertEqual(strata_runner.fast_cores([]), 0)
 
     def test_perf_cores(self):
         cores = strata_runner.get_perf_cores()
