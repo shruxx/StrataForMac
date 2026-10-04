@@ -3582,7 +3582,7 @@ def main() -> int:
                  "compiling it on Windows: tools\\hip\\build_windows.bat makes strata-windows-x64-hip.zip, then run "
                  "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
         gpu = hip_card(eng, gpu, amd)
-        a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
+        a.gpu = gpu["index"] if gpu.get("count", 1) > 1 else a.gpu
     else:
         eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision)
     if eng is not None and not hip and not is_mac and json.loads((eng / "BUILD.json").read_text()).get("source") != "local":
