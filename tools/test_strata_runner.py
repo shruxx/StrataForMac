@@ -55,15 +55,26 @@ class TestStrataRunner(unittest.TestCase):
         kolibri = 47454113472
         # 48 GB M5 Pro, working set ~36 GiB: the model does not fit, so the GPU gets 60% of what macOS leaves
         self.assertEqual(strata_runner.gpu_budget(48 * G, 36 * G, kolibri), int(40 * G * 0.6))
-        self.assertEqual(strata_runner.fit_margin_mib(48 * G, 36 * G, kolibri), (36 * G - int(40 * G * 0.6)) // 2 ** 20)
+        self.assertEqual(strata_runner.fit_margin_mib(36 * G, strata_runner.gpu_budget(48 * G, 36 * G, kolibri)), (36 * G - int(40 * G * 0.6)) // 2 ** 20)
         # 64 GB: it fits whole, up to the working set
         self.assertEqual(strata_runner.gpu_budget(64 * G, 48 * G, kolibri), 48 * G)
         # a small model: the whole working set, and llama.cpp's own 1 GiB margin
-        self.assertEqual(strata_runner.fit_margin_mib(32 * G, 21 * G, 4 * G), 1024)
+        self.assertEqual(strata_runner.fit_margin_mib(21 * G, strata_runner.gpu_budget(32 * G, 21 * G, 4 * G)), 1024)
         # GPU and the CPU-side page cache never exceed what is left after macOS's reserve
         for ram in (16, 24, 32, 36, 48, 64, 96, 128):
             b = strata_runner.gpu_budget(ram * G, int(ram * G * 0.75), kolibri)
             self.assertLessEqual(b, ram * G - strata_runner.OS_RESERVE)
+
+    def test_gpu_layers_whole_layers_from_the_end(self):
+        # -ngl N: the output head and the last N-1 blocks
+        self.assertEqual(strata_runner.gpu_layer_count([10] * 8, 5, 4), 0)
+        self.assertEqual(strata_runner.gpu_layer_count([10] * 8, 5, 5), 1)
+        self.assertEqual(strata_runner.gpu_layer_count([10] * 8, 5, 34), 3)
+        self.assertEqual(strata_runner.gpu_layer_count([10] * 8, 5, 1000), 9)
+        cmd = strata_runner.llama_server_cmd("llama-server", "m.gguf", 4096, 8080, 8, "int8", gpu_layers=26)
+        self.assertEqual(cmd[cmd.index("--fit") + 1], "off")
+        self.assertEqual(cmd[cmd.index("-ngl") + 1], "26")
+        self.assertNotIn("--fit-target", cmd)
 
     def test_no_repack_only_when_paging(self):
         G = strata_runner.GIB

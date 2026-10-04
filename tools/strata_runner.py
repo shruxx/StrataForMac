@@ -150,11 +150,7 @@ def metal_working_set(llama_bin) -> int:
 
 def model_bytes(model_path) -> int:
     """The model's size on disk: all shards of a split GGUF (name-00001-of-0000N.gguf)."""
-    p = Path(model_path)
-    m = re.match(r"(.*)-\d{5}-of-(\d{5})\.gguf$", p.name)
-    if not m:
-        return p.stat().st_size
-    return sum(f.stat().st_size for f in p.parent.glob(f"{m.group(1)}-*-of-{m.group(2)}.gguf"))
+    return sum(f.stat().st_size for f in model_shards(model_path))
 
 
 def pages_from_ssd(ram: int, model: int) -> bool:
@@ -178,14 +174,57 @@ def gpu_budget(ram: int, working_set: int, model: int) -> int:
     return min(working_set, int(usable * GPU_SHARE))
 
 
-def fit_margin_mib(ram: int, working_set: int, model: int) -> int:
-    """--fit-target: the MiB --fit leaves free of the working set so that the GPU holds at most gpu_budget()
-    (1024, llama.cpp's default, when that is less)."""
-    return max((working_set - gpu_budget(ram, working_set, model)) // MIB, 1024)
+def model_shards(model_path) -> list[Path]:
+    """The model's files: all shards of a split GGUF (name-00001-of-0000N.gguf), else the one file."""
+    p = Path(model_path)
+    m = re.match(r"(.*)-\d{5}-of-(\d{5})\.gguf$", p.name)
+    return sorted(p.parent.glob(f"{m.group(1)}-*-of-{m.group(2)}.gguf")) if m else [p]
+
+
+def layer_sizes(model_path) -> tuple[list[int], int] | None:
+    """The bytes of each transformer block (blk.N.*) and of the output head (output*, which llama.cpp offloads as
+    one more layer), from the GGUF tensor tables; None when the files cannot be read."""
+    try:
+        from gguf_reader import GGUFFile
+        blocks: dict[int, int] = {}
+        head = 0
+        for f in model_shards(model_path):
+            g = GGUFFile(f)
+            end = f.stat().st_size - g.data_start
+            ts = sorted(g.tensors, key=lambda t: t.offset)
+            for t, nxt in zip(ts, ts[1:] + [None]):
+                size = (nxt.offset if nxt else end) - t.offset
+                m = re.match(r"blk\.(\d+)\.", t.name)
+                if m:
+                    blocks[int(m.group(1))] = blocks.get(int(m.group(1)), 0) + size
+                elif t.name.startswith("output"):
+                    head += size
+        return ([blocks[i] for i in sorted(blocks)], head) if blocks else None
+    except Exception:
+        return None
+
+
+def gpu_layer_count(blocks: list[int], head: int, weight_budget: int) -> int:
+    """llama.cpp's -ngl N puts the output head and the last N-1 blocks on the GPU: the largest N whose weights fit."""
+    if head > weight_budget:
+        return 0
+    used, n = head, 1
+    for b in reversed(blocks):
+        if used + b > weight_budget:
+            break
+        used, n = used + b, n + 1
+    return n
+
+
+def fit_margin_mib(working_set: int, budget: int) -> int:
+    """--fit-target: the MiB --fit leaves free of the working set so that the GPU holds at most `budget` (1024,
+    llama.cpp's default, when that is less)."""
+    return max((working_set - budget) // MIB, 1024)
 
 
 def llama_server_cmd(llama_bin, model_path, max_context: int, port: int, threads: int, kv: str,
-                     fit_target_mib: int | None = None, no_repack: bool = False) -> list[str]:
+                     fit_target_mib: int | None = None, no_repack: bool = False,
+                     gpu_layers: int | None = None) -> list[str]:
     """llama-server's command line.  No -ngl: an explicit layer count switches off llama.cpp's --fit, which otherwise
     keeps attention and the dense weights on the Metal GPU and moves only the sparse MoE experts of as many layers as
     needed to the CPU side when the whole model does not fit the GPU's working set (Strata's expert cache, the
@@ -195,8 +234,9 @@ def llama_server_cmd(llama_bin, model_path, max_context: int, port: int, threads
         str(llama_bin),
         "-m", str(model_path),
         "-c", str(max_context),
-        "--fit", "on",
-        *(["--fit-target", str(fit_target_mib)] if fit_target_mib else []),
+        # whole layers when the model does not fit the GPU (gpu_layers), else --fit with the budget's margin
+        *(["--fit", "off", "-ngl", str(gpu_layers)] if gpu_layers is not None else
+          ["--fit", "on", *(["--fit-target", str(fit_target_mib)] if fit_target_mib else [])]),
         # repacking copies the CPU-side experts into memory macOS can only swap, not drop and read again from the file
         *(["--no-repack"] if no_repack else []),
         "--port", str(port),
@@ -232,19 +272,32 @@ def run_serve(cfg: dict):
     # the GPU's share of the shared memory (gpu_budget); a margin in the config's "env" (LLAMA_ARG_FIT_TARGET) or
     # an explicit budget (STRATA_GPU_BUDGET_GB) wins
     ram, working_set, model = physical_memory(), metal_working_set(llama_bin), model_bytes(model_path)
-    fit_target = None
-    if os.environ.get("STRATA_GPU_BUDGET_GB") and working_set:
+    budget = None
+    if os.environ.get("STRATA_GPU_BUDGET_GB"):
         budget = int(float(os.environ["STRATA_GPU_BUDGET_GB"]) * GIB)
-        fit_target = max((working_set - budget) // MIB, 0)
     elif not os.environ.get("LLAMA_ARG_FIT_TARGET") and ram and working_set:
-        fit_target = fit_margin_mib(ram, working_set, model)
+        budget = gpu_budget(ram, working_set, model)
+    # a model larger than the budget: whole layers on the GPU, the first ones on the CPU.  --fit instead keeps
+    # every layer's attention on the GPU and moves the experts of many layers to the CPU, and the switches between
+    # them cost more than the work: OLMoE-1B-7B Q4_K_M on an M1 Max, 1.3 GiB of weights on the GPU, 55.8 tok/s with
+    # --fit, 92.8 with -ngl 5 (bench/results/2026-10-04-macos-split)
+    fit_target, gpu_layers, sizes = None, None, None
+    if os.environ.get("STRATA_GPU_LAYERS", "").strip().isdigit():     # measured with tools/mac_split_bench.py
+        gpu_layers, sizes = int(os.environ["STRATA_GPU_LAYERS"]), layer_sizes(model_path)
+    elif budget is not None and model + CTX_ALLOWANCE > budget:
+        sizes = layer_sizes(model_path)
+        if sizes:
+            gpu_layers = gpu_layer_count(sizes[0], sizes[1], budget - CTX_ALLOWANCE)
+    if gpu_layers is None and budget is not None and working_set:
+        fit_target = fit_margin_mib(working_set, budget)
     if ram and working_set:
+        how = (f"{gpu_layers} of {len(sizes[0]) + 1 if sizes else '?'} layers on the GPU" if gpu_layers is not None else
+               f"GPU budget {budget / GIB:.1f} GiB" if budget is not None else "llama.cpp's own fit")
         sys.stderr.write(f"[strata] memory: {ram / GIB:.0f} GiB shared, GPU working set {working_set / GIB:.1f} GiB, "
-                         f"model {model / GIB:.1f} GiB -> GPU budget "
-                         f"{(working_set - (fit_target or 1024) * MIB) / GIB:.1f} GiB\n")
+                         f"model {model / GIB:.1f} GiB -> {how}\n")
     no_repack = bool(ram) and pages_from_ssd(ram, model)
     cmd = llama_server_cmd(llama_bin, model_path, max_context, port, threads, cfg.get("kv", "int8"), fit_target,
-                           no_repack)
+                           no_repack, gpu_layers)
     kv = cfg.get("kv", "int8")
 
     sys.stderr.write(f"[strata] starting Metal engine on port {port} (model: {Path(model_path).name}, ctx: {max_context}, threads: {threads}) ...\n")
