@@ -3,6 +3,13 @@
 <p align="center"><b>Run sovereign 78B–125B parameter Mixture-of-Experts (MoE) AI models locally on your Mac or PC</b><br>
 Apple Silicon Mac (M1/M2/M3/M4) · Metal GPU Acceleration · Unified Memory · Also supports NVIDIA & AMD · Free and Open Source</p>
 
+<p align="center">
+  <a href="https://github.com/shruxx/StrataForMac/archive/refs/heads/main.zip"><b>⬇️ Download Strata for Mac (.zip)</b></a> &nbsp;·&nbsp; 
+  <a href="#quickstart">Quickstart</a> &nbsp;·&nbsp; 
+  <a href="#which-model-should-i-pick">Models</a> &nbsp;·&nbsp; 
+  <a href="docs/MACOS.md">macOS Architecture</a>
+</p>
+
 <p align="center"><a href="https://github.com/shruxx/StrataForMac/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
 <sub>A voxel pagoda garden, 1 shot prompt running with Strata (IQ3_S, 128K context) ·
 <a href="https://github.com/shruxx/StrataForMac/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
@@ -80,6 +87,8 @@ Full platform details: [docs/MACOS.md](docs/MACOS.md) and [docs/INSTALL.md](docs
 
 ## Quickstart
 
+**[⬇️ Download Strata for Mac (.zip)](https://github.com/shruxx/StrataForMac/archive/refs/heads/main.zip)** and unzip it, or clone the repository in Terminal:
+
 ### 1. One-click setup on macOS
 
 Open Terminal and run:
@@ -89,6 +98,8 @@ git clone https://github.com/shruxx/StrataForMac.git
 cd StrataForMac
 ./setup.sh
 ```
+
+*(Or if you downloaded the .zip, open Terminal in the unzipped `StrataForMac` folder and run `./setup.sh`)*.
 
 Setup checks your Mac's CPU, GPU cores, and Unified Memory, recommends the optimal model for your hardware, compiles the native Metal engine, downloads the weights, and launches the server.
 
@@ -114,8 +125,8 @@ Your AI assistant will inspect your hardware, choose the best model, run setup, 
 
 ### 3. Windows & Linux
 
-- **Windows:** Double-click **`START-HERE.bat`** (or run `START-HERE.bat --setup`).
-- **Linux:** Run **`./setup.sh`**.
+- **Windows:** [Download the ZIP](https://github.com/shruxx/StrataForMac/archive/refs/heads/main.zip), unzip it, and double-click **`START-HERE.bat`** (or run `START-HERE.bat --setup`).
+- **Linux:** Run **`./setup.sh`** in the unzipped or cloned folder.
 
 ---
 
