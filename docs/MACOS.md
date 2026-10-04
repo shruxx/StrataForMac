@@ -65,6 +65,11 @@ The macOS port replaces Linux- and Windows-specific APIs with native Darwin and 
 - `strata-vision` compiles natively with Apple's `Metal.framework` and `Accelerate.framework`.
 - Metal compute shaders accelerate image encoding directly on Apple Silicon GPUs.
 
+### 6. Metal GPU Engine (`tools/strata_runner.py`, `engine/strata`)
+- On Apple Silicon Macs, inference is accelerated natively via Apple Metal compute shaders with Unified Memory Architecture (UMA).
+- `engine/strata` implements the resident Strata Engine IPC protocol (`--serve`, `GEN`, `T`, `DONE`, `STOP`, `QUIT`) interfacing with `serve/server.py`.
+- Supports full offloading of active weights and KV cache to Apple Silicon Metal GPU cores for high token throughput across both Qwen and Kolibri-1 MoE models.
+
 ---
 
 ## Building by Hand

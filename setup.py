@@ -2055,7 +2055,7 @@ def find_or_install_cmake() -> str:
          "Install it with 'brew install cmake' or 'pip install cmake', then run setup again.")
 
 
-def build_engine_macos(vision="none") -> Path:
+def build_engine_macos(vision="none", llama=None) -> Path:
     eng = ROOT / "engine"
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
@@ -2076,16 +2076,45 @@ def build_engine_macos(vision="none") -> Path:
         tpath = build_dir / target
         if tpath.exists():
             shutil.copy2(tpath, eng / target)
-    if not (eng / EXE).exists():
-        shim = eng / EXE
-        shim.write_text("#!/bin/sh\nexec python3 -m strata \"$@\"\n", encoding="utf-8")
-        shim.chmod(0o755)
+
+    # Build llama-server and llama-cli with Metal GPU acceleration for macOS
+    llama_dir = Path(llama) if llama else (ROOT / "third_party" / "llama.cpp")
+    if not llama_dir.exists():
+        llama_dir = build_dir / "_deps" / "strata_llamacpp-src"
+    if llama_dir.exists():
+        say("  Building Metal engine backend (llama-server) ...")
+        llama_build = ROOT / "build-llama"
+        cmake_lcmd = [cmake_bin, "-B", str(llama_build), "-S", str(llama_dir),
+                      "-DCMAKE_BUILD_TYPE=Release", "-DGGML_METAL=ON", "-DBUILD_SHARED_LIBS=OFF"]
+        subprocess.run(cmake_lcmd, cwd=str(ROOT), check=True, env=env)
+        subprocess.run([cmake_bin, "--build", str(llama_build), "--target", "llama-server", "llama-cli", "-j",
+                        str(os.cpu_count() or 4)], cwd=str(ROOT), check=True, env=env)
+        for b in ["llama-server", "llama-cli"]:
+            src_bin = llama_build / "bin" / b
+            if src_bin.exists():
+                shutil.copy2(src_bin, eng / b)
+
+    # The Strata engine executable on macOS runs tools/strata_runner.py, which translates
+    # between the resident IPC protocol (--serve, GEN, T, DONE, STOP, QUIT) and the Metal engine
+    runner_script = (
+        "#!/bin/sh\n"
+        "DIR=\"$(cd \"$(dirname \"$0\")/..\" && pwd)\"\n"
+        "PYTHON=\"$DIR/.venv/bin/python3\"\n"
+        "[ -x \"$PYTHON\" ] || PYTHON=\"python3\"\n"
+        "exec \"$PYTHON\" \"$DIR/tools/strata_runner.py\" \"$@\"\n"
+    )
+    shim = eng / EXE
+    shim.write_text(runner_script, encoding="utf-8")
+    shim.chmod(0o755)
+
     if vision != "none":
         say("  Building vision encoder for macOS ...")
         vbuild = ROOT / "build-vision"
-        llama_dir = build_dir / "_deps" / "strata_llamacpp-src"
+        llama_dir_v = build_dir / "_deps" / "strata_llamacpp-src"
+        if not llama_dir_v.exists():
+            llama_dir_v = llama_dir
         cmake_vcmd = [cmake_bin, "-S", str(ROOT / "tools" / "vision"), "-B", str(vbuild),
-                      "-DCMAKE_BUILD_TYPE=Release", f"-DLLAMA_DIR={llama_dir}"]
+                      "-DCMAKE_BUILD_TYPE=Release", f"-DLLAMA_DIR={llama_dir_v}"]
         subprocess.run(cmake_vcmd, cwd=str(ROOT), check=True, env=env)
         subprocess.run([cmake_bin, "--build", str(vbuild), "--target", "strata-vision"], cwd=str(ROOT), check=True, env=env)
         if (vbuild / "bin" / VEXE).exists():
@@ -3579,7 +3608,7 @@ def main() -> int:
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
     if is_mac:
-        eng = build_engine_macos(vision)
+        eng = build_engine_macos(vision, llama)
     elif hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
         eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
         if eng is None:
