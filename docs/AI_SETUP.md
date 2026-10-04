@@ -45,7 +45,7 @@ To check by hand:
 Requirements (details: [INSTALL.md](INSTALL.md#what-you-need) and [MACOS.md](MACOS.md)):
 
 - **GPU:**
-  - **macOS:** Apple Silicon (M1, M2, M3, M4 series: base, Pro, Max, or Ultra) with Unified Memory.
+  - **macOS:** Apple Silicon (M1, M2, M3, M4, M5 series: base, Pro, Max, or Ultra) with Unified Memory.
   - **Windows / Linux:** NVIDIA RTX 20, 30, 40 or 50 series, or AMD Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700, RX 6800 / 6900 series; 12 GB of VRAM or more (an NVIDIA card with 8 GB runs, slowly).
   - GTX 10 series and older, and Intel integrated GPUs, are not supported.
 - **Driver & Tools:**

@@ -13,7 +13,7 @@ coding assistant can do all of this for you with [AI_SETUP.md](AI_SETUP.md). Det
 
 | | |
 | --- | --- |
-| **GPU / Platform** | **Apple Silicon Mac** (M1/M2/M3/M4: base, Pro, Max, Ultra) with Unified Memory. **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards) and [MACOS.md](MACOS.md). |
+| **GPU / Platform** | **Apple Silicon Mac** (M1/M2/M3/M4/M5: base, Pro, Max, Ultra) with Unified Memory. **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards) and [MACOS.md](MACOS.md). |
 | **RAM** | Enough for the size you pick ([which model](MODELS.md#pick-by-ram)); **64 GB** runs every size. On Apple Silicon, RAM is Unified Memory shared between CPU and GPU. 32 GB fits the Coder (IQ1_M). |
 | **CPU** | Apple Silicon ARM64 (NEON + Accelerate framework) or x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). |
 | **Disk** | ~70-80 GB free for the model (Coder IQ1_M is ~23 GB), ~6 GB for the MTP layer (+1 GB with images). An SSD (internal NVMe or Mac internal storage) is strongly recommended. |

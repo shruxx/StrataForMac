@@ -1,6 +1,6 @@
 # Strata on macOS (Apple Silicon)
 
-Strata runs on Apple Silicon Macs (M1, M2, M3, M4 — base, Pro, Max, Ultra) under macOS.
+Strata runs on Apple Silicon Macs (M1, M2, M3, M4, M5 — base, Pro, Max, Ultra) under macOS.
 
 Apple Silicon features Unified Memory Architecture (UMA), meaning CPU and GPU share the same physical memory pool with high bandwidth (e.g. 400 GB/s on M1 Max). This fits Strata's hybrid MoE design naturally: expert activations can be computed with ARM NEON and Apple Accelerate BLAS without PCIe transfer bottlenecks.
 
@@ -8,7 +8,7 @@ Apple Silicon features Unified Memory Architecture (UMA), meaning CPU and GPU sh
 
 ## What you need
 
-- **Mac:** Any Apple Silicon Mac (M1/M2/M3/M4 family).
+- **Mac:** Any Apple Silicon Mac (M1/M2/M3/M4/M5 family).
 - **RAM (Unified Memory):**
   - **32 GB:** Runs the Qwen3.8-Flash-Next Coder (`IQ1_M`, ~23 GB model arena).
   - **48 GB – 64 GB:** Runs `IQ2_XS` and `IQ3_XXS`.

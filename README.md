@@ -1,7 +1,7 @@
 <h1 align="center">Strata for Mac</h1>
 
 <p align="center"><b>Run sovereign 78B–125B parameter Mixture-of-Experts (MoE) AI models locally on your Mac or PC</b><br>
-Apple Silicon Mac (M1/M2/M3/M4) · Metal GPU Acceleration · Unified Memory · Also supports NVIDIA & AMD · Free and Open Source</p>
+Apple Silicon Mac (M1/M2/M3/M4/M5) · Metal GPU Acceleration · Unified Memory · Also supports NVIDIA & AMD · Free and Open Source</p>
 
 <p align="center">
   <a href="https://github.com/shruxx/StrataForMac/archive/refs/heads/main.zip"><b>⬇️ Download Strata for Mac (.zip)</b></a> &nbsp;·&nbsp; 
@@ -76,7 +76,7 @@ Strata runs massive, state-of-the-art open-weight Mixture-of-Experts (MoE) model
 
 | | |
 | :--- | :--- |
-| **Apple Silicon Mac** | Any Mac with **M1, M2, M3, or M4** (base, Pro, Max, Ultra) with **Unified Memory**:<br>• **32 GB:** Runs Qwen Coder (`IQ1_M`) or Kolibri-1 in low-RAM mode<br>• **48 GB:** Runs **Kolibri-1 Q4_K_M** (ideal fit!) and Qwen `IQ2_XS` at full speed<br>• **64 GB:** Runs Kolibri-1 and Qwen `IQ3_XXS` with room for large contexts<br>• **96 GB – 128 GB+:** Runs Kolibri-1 with 262K context and Qwen `IQ3_S` |
+| **Apple Silicon Mac** | Any Mac with **M1, M2, M3, M4, or M5** (base, Pro, Max, Ultra) with **Unified Memory**:<br>• **32 GB:** Runs Qwen Coder (`IQ1_M`) or Kolibri-1 in low-RAM mode<br>• **48 GB:** Runs **Kolibri-1 Q4_K_M** (ideal fit!) and Qwen `IQ2_XS` at full speed<br>• **64 GB:** Runs Kolibri-1 and Qwen `IQ3_XXS` with room for large contexts<br>• **96 GB – 128 GB+:** Runs Kolibri-1 with 262K context and Qwen `IQ3_S` |
 | **PC (NVIDIA / AMD)** | **NVIDIA** GeForce RTX 20, 30, 40 or 50 series (12 GB+ VRAM) or **AMD** Radeon RX 7900 / 9070 / AI PRO series, with 32–64 GB system RAM |
 | **Disk** | ~70–80 GB free space on a fast SSD |
 | **System** | macOS 12 (Monterey) or newer (macOS 13+ recommended), Windows 10 / 11 or Linux |
