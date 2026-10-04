@@ -157,6 +157,12 @@ def model_bytes(model_path) -> int:
     return sum(f.stat().st_size for f in p.parent.glob(f"{m.group(1)}-*-of-{m.group(2)}.gguf"))
 
 
+def pages_from_ssd(ram: int, model: int) -> bool:
+    """True when the model, its KV cache and buffers do not fit the memory left after OS_RESERVE: its CPU-side
+    experts are then read through the page cache from the SSD."""
+    return model + CTX_ALLOWANCE > max(ram - OS_RESERVE, 0)
+
+
 def gpu_budget(ram: int, working_set: int, model: int) -> int:
     """How many bytes of the model, KV cache and compute buffers may live on the Metal GPU.
 
@@ -167,7 +173,7 @@ def gpu_budget(ram: int, working_set: int, model: int) -> int:
     OS_RESERVE goes on the GPU whole (up to its working set); a larger one gets GPU_SHARE of that memory on the GPU
     and leaves the rest as page cache for its CPU-side experts."""
     usable = max(ram - OS_RESERVE, 0)
-    if model + CTX_ALLOWANCE <= usable:
+    if not pages_from_ssd(ram, model):
         return min(working_set, usable)
     return min(working_set, int(usable * GPU_SHARE))
 
@@ -179,7 +185,7 @@ def fit_margin_mib(ram: int, working_set: int, model: int) -> int:
 
 
 def llama_server_cmd(llama_bin, model_path, max_context: int, port: int, threads: int, kv: str,
-                     fit_target_mib: int | None = None) -> list[str]:
+                     fit_target_mib: int | None = None, no_repack: bool = False) -> list[str]:
     """llama-server's command line.  No -ngl: an explicit layer count switches off llama.cpp's --fit, which otherwise
     keeps attention and the dense weights on the Metal GPU and moves only the sparse MoE experts of as many layers as
     needed to the CPU side when the whole model does not fit the GPU's working set (Strata's expert cache, the
@@ -191,6 +197,8 @@ def llama_server_cmd(llama_bin, model_path, max_context: int, port: int, threads
         "-c", str(max_context),
         "--fit", "on",
         *(["--fit-target", str(fit_target_mib)] if fit_target_mib else []),
+        # repacking copies the CPU-side experts into memory macOS can only swap, not drop and read again from the file
+        *(["--no-repack"] if no_repack else []),
         "--port", str(port),
         "--host", "127.0.0.1",
         "--parallel", "1",
@@ -234,7 +242,9 @@ def run_serve(cfg: dict):
         sys.stderr.write(f"[strata] memory: {ram / GIB:.0f} GiB shared, GPU working set {working_set / GIB:.1f} GiB, "
                          f"model {model / GIB:.1f} GiB -> GPU budget "
                          f"{(working_set - (fit_target or 1024) * MIB) / GIB:.1f} GiB\n")
-    cmd = llama_server_cmd(llama_bin, model_path, max_context, port, threads, cfg.get("kv", "int8"), fit_target)
+    no_repack = bool(ram) and pages_from_ssd(ram, model)
+    cmd = llama_server_cmd(llama_bin, model_path, max_context, port, threads, cfg.get("kv", "int8"), fit_target,
+                           no_repack)
     kv = cfg.get("kv", "int8")
 
     sys.stderr.write(f"[strata] starting Metal engine on port {port} (model: {Path(model_path).name}, ctx: {max_context}, threads: {threads}) ...\n")

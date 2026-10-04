@@ -65,6 +65,15 @@ class TestStrataRunner(unittest.TestCase):
             b = strata_runner.gpu_budget(ram * G, int(ram * G * 0.75), kolibri)
             self.assertLessEqual(b, ram * G - strata_runner.OS_RESERVE)
 
+    def test_no_repack_only_when_paging(self):
+        G = strata_runner.GIB
+        self.assertTrue(strata_runner.pages_from_ssd(48 * G, 47454113472))     # Kolibri Q4_K_M on 48 GB
+        self.assertFalse(strata_runner.pages_from_ssd(64 * G, 47454113472))    # fits whole on 64 GB
+        cmd = strata_runner.llama_server_cmd("llama-server", "m.gguf", 4096, 8080, 8, "int8", 12288, True)
+        self.assertIn("--no-repack", cmd)
+        self.assertEqual(cmd[cmd.index("--fit-target") + 1], "12288")
+        self.assertNotIn("--no-repack", strata_runner.llama_server_cmd("llama-server", "m.gguf", 4096, 8080, 8, "int8"))
+
     def test_model_bytes_counts_all_shards(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

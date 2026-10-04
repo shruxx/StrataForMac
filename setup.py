@@ -2064,27 +2064,34 @@ def find_or_install_cmake() -> str:
          "Install it with 'brew install cmake' or 'pip install cmake', then run setup again.")
 
 
-KOLIBRI_PATCH = ROOT / "third_party" / "patches" / "kolibri1-llama.cpp.patch"
+# llama.cpp patches for macOS's llama-server, in order: (file, a line only the patched source has, its file, what it does)
+LLAMA_PATCHES = (
+    ("kolibri1-llama.cpp.patch", '"kolibri1"', "src/llama-arch.cpp", "Kolibri-1 (kolibri1)"),
+    ("metal-split-mmap.patch", "mmap_range_tight", "src/llama-model.cpp", "GPU/CPU weight split on Metal"),
+)
 
 
-def patch_llama_kolibri(llama_dir: Path):
-    """macOS runs Kolibri-1 on llama-server, and llama.cpp (pinned or upstream) has no 'kolibri1' architecture yet:
-    without this the engine stops at the start with "unknown model architecture: 'kolibri1'".  Applies the GGUF
-    author's patch (third_party/patches) once; `patch`, not `git apply`, which inside this repo's working tree can
-    skip the files without saying so."""
-    arch = llama_dir / "src" / "llama-arch.cpp"
-    if not arch.exists() or '"kolibri1"' in arch.read_text(encoding="utf-8", errors="ignore"):
-        return
-    if not KOLIBRI_PATCH.exists():
-        warn(f"{KOLIBRI_PATCH.relative_to(ROOT)} is missing: the macOS engine will not run Kolibri-1")
-        return
-    with open(KOLIBRI_PATCH, "rb") as f:
-        r = subprocess.run(["patch", "-p1", "--forward", "--batch", "-V", "none"], cwd=str(llama_dir), stdin=f,
-                           capture_output=True, text=True)
-    if r.returncode != 0:
-        fail(f"could not apply {KOLIBRI_PATCH.name} to {llama_dir}:\n{(r.stdout + r.stderr).strip()[-2000:]}",
-             "delete third_party/llama.cpp and run setup again (it is downloaded fresh)")
-    ok("llama.cpp patched for Kolibri-1 (kolibri1)")
+def patch_llama_macos(llama_dir: Path):
+    """The llama.cpp changes macOS's llama-server needs (third_party/patches): llama.cpp (pinned or upstream) has no
+    'kolibri1' architecture yet ("unknown model architecture: 'kolibri1'"), and with the MoE experts split between
+    the GPU and the CPU it mapped the whole model file into the GPU's buffer (kIOGPUCommandBufferCallbackErrorOutOfMemory
+    on a 48 GB Mac).  Each is applied once; `patch`, not `git apply`, which inside this repo's working tree can skip
+    the files without saying so."""
+    for name, marker, where, what in LLAMA_PATCHES:
+        target = llama_dir / where
+        if not target.exists() or marker in target.read_text(encoding="utf-8", errors="ignore"):
+            continue
+        patch_file = ROOT / "third_party" / "patches" / name
+        if not patch_file.exists():
+            warn(f"{patch_file.relative_to(ROOT)} is missing: the macOS engine runs without it ({what})")
+            continue
+        with open(patch_file, "rb") as f:
+            r = subprocess.run(["patch", "-p1", "--forward", "--batch", "-V", "none"], cwd=str(llama_dir), stdin=f,
+                               capture_output=True, text=True)
+        if r.returncode != 0:
+            fail(f"could not apply {name} to {llama_dir}:\n{(r.stdout + r.stderr).strip()[-2000:]}",
+                 "delete third_party/llama.cpp and run setup again (it is downloaded fresh)")
+        ok(f"llama.cpp patched: {what}")
 
 
 def build_engine_macos(vision="none", llama=None) -> Path:
@@ -2118,7 +2125,7 @@ def build_engine_macos(vision="none", llama=None) -> Path:
         elif (build_dir / "_deps" / "strata_llamacpp-src" / "CMakeLists.txt").exists():
             llama_dir = build_dir / "_deps" / "strata_llamacpp-src"
     if llama_dir.exists():
-        patch_llama_kolibri(llama_dir)
+        patch_llama_macos(llama_dir)
         say("  Building Metal engine backend (llama-server) ...")
         llama_build = ROOT / "build-llama"
         cache = llama_build / "CMakeCache.txt"

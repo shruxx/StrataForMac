@@ -1,0 +1,47 @@
+Metal on Apple Silicon: do not map the model file into a GPU buffer when the GPU's weights are split with the CPU
+(tools/strata_runner.py's GPU budget moves MoE experts to the CPU side).  The mapped range runs from the GPU's first
+tensor to its last in the file and so held the CPU-side experts too, and Metal keeps its buffers resident: Kolibri-1
+Q4_K_M on a 48 GB Mac failed with kIOGPUCommandBufferCallbackErrorOutOfMemory.  Measured with OLMoE-1B-7B Q4_K_M
+on an M1 Max, --fit-target 25600: the GPU buffer was 3961 MiB (the whole model) for a plan of 1420 MiB, with this
+patch 1420 MiB.  Strata's own change, applied after kolibri1-llama.cpp.patch by setup.py (build_engine_macos).
+
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1776,7 +1776,36 @@
+         // a lazy context is mapped whatever the load mode, but the memory-fit pass maps nothing
+         const bool is_lazy_mapped = ctx_key.lazy && !ml.no_alloc;
+ 
+-        if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft) {
++        // strata: a GPU buffer over the mmap spans from this buffer type's first tensor to its last in each file.  With
++        // the MoE experts of some layers overridden to the CPU, that range still holds them, and on Apple Silicon the
++        // GPU keeps its whole buffer resident: a 47.5 GB model with 24 GiB meant for the GPU wired nearly all of it and
++        // failed with kIOGPUCommandBufferCallbackErrorOutOfMemory.  Map only when the range is (nearly) all this
++        // buffer type's own tensors; otherwise allocate and copy, and the CPU-side tensors stay pageable.
++        bool mmap_range_tight = true;
++        if (props.type != GGML_BACKEND_DEVICE_TYPE_CPU && !ml.no_alloc && (ml.use_mmap || is_lazy_mapped)) {
++            for (uint32_t idx = 0; idx < ml.files.size() && mmap_range_tight; idx++) {
++                void * addr = nullptr;
++                size_t first, last; // NOLINT
++                ml.get_mapping_range(&first, &last, &addr, idx, ctx);
++                if (first >= last) {
++                    continue;
++                }
++                size_t own = 0;
++                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
++                    const auto * w = ml.get_weight(ggml_get_name(t));
++                    if (w && w->idx == idx) {
++                        own += ggml_nbytes(t);
++                    }
++                }
++                mmap_range_tight = last - first <= own + own / 16 + (size_t) 256 * 1024 * 1024;
++            }
++            if (!mmap_range_tight) {
++                LLAMA_LOG_INFO("%s: %s: weights split with the CPU, copying them instead of mapping the file\n",
++                        __func__, ggml_backend_buft_name(buft));
++            }
++        }
++
++        if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft && mmap_range_tight) {
+             GGML_ASSERT(!ml.no_alloc);
+             for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
+                 // only the mmap region containing the tensors in the model is mapped to the backend buffer
