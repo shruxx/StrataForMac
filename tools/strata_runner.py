@@ -54,23 +54,16 @@ def get_free_port() -> int:
         return s.getsockname()[1]
 
 
-def fast_cores(levels: list[tuple[str, int]]) -> int:
-    """The cores of every performance level macOS does not call "Efficiency" (hw.perflevelN.name): the P cores on
-    M1-M4; on a Mac whose second level is fast too, those as well.  0 when none is known."""
-    return sum(n for name, n in levels if name.lower() != "efficiency" and n > 0)
-
-
 def get_perf_cores() -> int:
-    """The threads for llama-server: the Mac's fast cores (fast_cores)."""
+    """The threads for llama-server: the cores of the Mac's fastest performance level (hw.perflevel0).  Not the
+    other levels: on an M5 Pro (5 + 10 cores, the second level not called "Efficiency") Kolibri-1 wrote ~15 tok/s
+    with 15 threads (9 GPU layers); with 5 threads it had written ~24-35 (other GPU splits).  Every step waits for its
+    slowest thread."""
     try:
-        def ctl(key):
-            return subprocess.check_output(["sysctl", "-n", key], stderr=subprocess.DEVNULL).decode().strip()
-        levels = []
-        for i in range(int(ctl("hw.nperflevels") or 0)):
-            count = ctl(f"hw.perflevel{i}.physicalcpu")
-            levels.append((ctl(f"hw.perflevel{i}.name"), int(count) if count.isdigit() else 0))
-        if fast_cores(levels):
-            return fast_cores(levels)
+        out = subprocess.check_output(["sysctl", "-n", "hw.perflevel0.physicalcpu"],
+                                      stderr=subprocess.DEVNULL).decode().strip()
+        if out.isdigit() and int(out) > 0:
+            return int(out)
     except Exception:
         pass
     return max(1, (os.cpu_count() or 4) // 2 if (os.cpu_count() or 4) > 4 else (os.cpu_count() or 4))

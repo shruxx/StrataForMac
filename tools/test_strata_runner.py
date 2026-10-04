@@ -142,11 +142,6 @@ class TestStrataRunner(unittest.TestCase):
             self.assertEqual(strata_runner.model_bytes(Path(d, "m-00001-of-00002.gguf")), 30)
             self.assertEqual(strata_runner.model_bytes(Path(d, "other.gguf")), 5)
 
-    def test_fast_cores(self):
-        self.assertEqual(strata_runner.fast_cores([("Performance", 8), ("Efficiency", 2)]), 8)    # M1 Max
-        self.assertEqual(strata_runner.fast_cores([("Super", 5), ("Performance", 10)]), 15)      # two fast levels
-        self.assertEqual(strata_runner.fast_cores([]), 0)
-
     def test_perf_cores(self):
         cores = strata_runner.get_perf_cores()
         self.assertIsInstance(cores, int)
