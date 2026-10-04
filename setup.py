@@ -186,6 +186,7 @@ FAMILIES = {
                 "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
                 "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
                 "name": "kolibri-1", "license": "Apache 2.0: https://huggingface.co/Aleph-Alpha/Kolibri-1",
+                "has_ple": False, "has_mtp": False,
                 "vision": False},
     # EXPERIMENTAL: Unsloth's UD-Q4_K_XL of the original model (docs/UNSLOTH_Q4.md): four shards, no images yet
     "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's 4-bit quantization (EXPERIMENTAL)",
@@ -2071,10 +2072,14 @@ def build_engine_macos(vision="none") -> Path:
     targets = ["strata-gguf", "strata-plan", "strata-dequant", "strata_kernels_cpu"]
     build_cmd = [cmake_bin, "--build", str(build_dir), "--target", *targets]
     subprocess.run(build_cmd, cwd=str(ROOT), check=True, env=env)
-    for target in ["strata-gguf", "strata-plan", "strata-dequant"]:
+    for target in ["strata-gguf", "strata-plan", "strata-dequant", "strata"]:
         tpath = build_dir / target
         if tpath.exists():
             shutil.copy2(tpath, eng / target)
+    if not (eng / EXE).exists():
+        shim = eng / EXE
+        shim.write_text("#!/bin/sh\nexec python3 -m strata \"$@\"\n", encoding="utf-8")
+        shim.chmod(0o755)
     if vision != "none":
         say("  Building vision encoder for macOS ...")
         vbuild = ROOT / "build-vision"
@@ -3669,39 +3674,58 @@ def main() -> int:
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              "--experts-bin"], env=env)
     ok(f"model prepared: {pack}")
-    mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
-    rt = mtp / "rt"
-    corrupt = (rt / "experts.bin").exists() and mtp_corrupt(mtp, env)
-    if corrupt:
-        warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
-             "fetching them again and rebuilding the draft layer")
-    if corrupt or not (rt / "experts.bin").exists():
-        say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
-        say("  only its ~5 GB of MTP tensors are downloaded.")
-        run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)], env=env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
-             "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
-            env=env)
-    # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, en)
-    draft_vocab = a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")
-    refresh_draft_vocab(rt, draft_vocab or "cjk")
-    ok(f"MTP draft layer: {rt}")
-    for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
-        say("  " + line)
+    has_ple = fam.get("has_ple", family != "kolibri")
+    has_mtp = fam.get("has_mtp", family != "kolibri")
+    draft_vocab = None
+    if has_mtp:
+        mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
+        rt = mtp / "rt"
+        corrupt = (rt / "experts.bin").exists() and mtp_corrupt(mtp, env)
+        if corrupt:
+            warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
+                 "fetching them again and rebuilding the draft layer")
+        if corrupt or not (rt / "experts.bin").exists():
+            say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
+            say("  only its ~5 GB of MTP tensors are downloaded.")
+            run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)], env=env)
+            run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
+                 "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
+            run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
+                env=env)
+        # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, en)
+        draft_vocab = a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")
+        refresh_draft_vocab(rt, draft_vocab or "cjk")
+        ok(f"MTP draft layer: {rt}")
+        for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
+            say("  " + line)
+    else:
+        ok("MTP draft layer: off (native single-token autoregressive generation)")
 
     # ---- 7. the start script
     step(7, "writing the start script")
     sys.path.insert(0, str(ROOT / "tools"))
     from gguf_reader import GGUFFile                   # the PLE table's shard: shard 2 (original) or 1 (Swift)
-    ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
-    if ple is None:
-        fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
+    ple = None
+    if has_ple:
+        ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
+        if ple is None:
+            if family in ("qwen", "swift", "coder"):
+                fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
+            else:
+                has_ple = False
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
-    args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
-            "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
-            "--max-context", str(ctx)]
+    args = ["--pack", str(pack), "--native", str(shards[0])]
+    if ple is not None and len(shards) <= 2:
+        args += ["--ple-gguf", str(ple)]
+    elif not has_ple:
+        args += ["--no-ple"]
+    profile = fam.get("profile") or ("expert-profile.bin" if has_ple else None)
+    if profile:
+        args += ["--expert-profile", str(ROOT / "data" / profile)]
+    args += ["--expert-cache", "auto", "--prefill", "auto"]
+    if has_mtp:
+        args += ["--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt)]
+    args += ["--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
     if ctx > 8192:

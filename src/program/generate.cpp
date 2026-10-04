@@ -1591,31 +1591,37 @@ int main(int argc, char** argv) {
     }
     strata::core::layer_set_shared_early(!o.shared_late);
     if (!o.native_preset.empty()) {
+        bool model_has_ple = false;
         try {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native).  A missing shard is an error
             // here: it used to be skipped, leaving a model with some tensors absent and a later error, or none.
             o.native_shards = strata::gguf_split_paths(o.native_preset);
             // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
             // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
-            if (o.ple_gguf.empty() && !o.no_ple) {
+            if (!o.no_ple) {
                 const strata::GgufModel model(o.native_shards);
                 size_t at = 0;
-                if (model.find("per_layer_token_embd.weight", &at) != nullptr) o.ple_gguf = o.native_shards[at];
+                if (model.find("per_layer_token_embd.weight", &at) != nullptr) {
+                    model_has_ple = true;
+                    if (o.ple_gguf.empty()) o.ple_gguf = o.native_shards[at];
+                }
             }
         } catch (const std::exception& e) {
             std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), e.what());
             return 2;
         }
-        if (o.no_ple || o.ple_gguf.empty()) {
-            std::fprintf(stderr, "strata generate: --native requires --ple-gguf (the PLE key is native too), and no "
-                                 "shard of the model holds per_layer_token_embd.weight\n");
-            return 2;
+        if (!model_has_ple || o.ple_gguf.empty()) {
+            o.no_ple = true;
+            o.ple_gguf.clear();
         }
         o.stream_token = true;
         o.gr_native_mmvf = true;
         o.native_bf16 = o.native_bf16_extra = true;
-        o.native_ple_key = o.native_moe_combine = o.native_gdn = o.native_router = true;
-        o.native_qsa = o.native_qsa_indexer = o.native_rope = o.native_ple_postops = true;
+        o.native_moe_combine = o.native_gdn = o.native_router = true;
+        o.native_qsa = o.native_qsa_indexer = o.native_rope = true;
+        if (!o.no_ple) {
+            o.native_ple_key = o.native_ple_postops = true;
+        }
         if (o.native_head_gguf.empty()) o.native_head_gguf = o.native_preset;
         if (o.native_dense_gguf.empty()) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
@@ -1623,13 +1629,15 @@ int main(int argc, char** argv) {
             o.native_dense_gguf = o.native_shards;
             // a PLE-only table (tools/ple_fp8_pack.py: architecture strata-ple) holds no projections
             bool ple_only = false;
-            try {
-                strata::GgufFile pg(o.ple_gguf);
-                if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
-            } catch (const std::exception&) {}
-            if (!ple_only &&
-                std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
-                o.native_dense_gguf.push_back(o.ple_gguf);
+            if (!o.ple_gguf.empty()) {
+                try {
+                    strata::GgufFile pg(o.ple_gguf);
+                    if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
+                } catch (const std::exception&) {}
+                if (!ple_only &&
+                    std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
+                    o.native_dense_gguf.push_back(o.ple_gguf);
+            }
         }
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
         // cost 27.0 vs 17.2 ms/token of pool time and G-C does not need it; `--cpu-oracle-q8-0` still selects it.
@@ -1860,12 +1868,25 @@ int main(int argc, char** argv) {
             // is the authority on its own MoE shape - everything else in the geometry is unchanged
             try {
                 strata::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
+                std::string arch_name = "qwen4exp";
+                if (const strata::MetaValue* va = model_gguf.get("general.architecture")) arch_name = va->s;
+                if (arch_name == "kolibri" || arch_name == "kolibri1") {
+                    g = strata::core::ModelGeometry::kolibri1();
+                    K = g.n_expert_used;
+                }
+                if (const strata::MetaValue* v = model_gguf.get(arch_name + ".expert_count")) g.n_expert = (int64_t) v->u;
+                else if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
+                if (const strata::MetaValue* v = model_gguf.get(arch_name + ".expert_used_count")) K = (int64_t) v->u;
+                else if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
+                if (const strata::MetaValue* v = model_gguf.get(arch_name + ".rope.freq_base")) gguf_rope_base = v->num();
+                else if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(arch_name + ".rope.scaling.type")) gguf_rope_type = v->s;
+                else if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
+                if (const strata::MetaValue* v = model_gguf.get(arch_name + ".rope.scaling.factor")) gguf_rope_factor = v->num();
+                else if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(arch_name + ".rope.scaling.original_context_length"))
+                    gguf_rope_orig_ctx = v->num();
+                else if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
                     gguf_rope_orig_ctx = v->num();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
@@ -6143,7 +6164,7 @@ int main(int argc, char** argv) {
 
     for (int64_t pos = pos_start;; ++pos) {
         // plan v0.3 P6: a native pack's last prompt token is the first verify window (T = 1)
-        if (native_pack) { spec_pos = pos; break; }
+        if (native_pack && o.spec >= 2) { spec_pos = pos; break; }
         if (pos >= o.max_context) {
             std::fprintf(stderr, "strata generate: ran out of context at position %lld\n", (long long) pos);
             return 2;
@@ -6360,7 +6381,7 @@ int main(int argc, char** argv) {
         ss.ple_prev[1] = (int32_t) tok;
         tok = (pos + 1 < n_prompt) ? o.tokens[(size_t) (pos + 1)] : next;
         // Plan v0.3 P6: from the first generated token on, the speculative loop below takes over.
-        if (o.spec > 0 && pos >= n_prompt - 1) { spec_pos = pos + 1; break; }
+        if (o.spec >= 2 && pos >= n_prompt - 1) { spec_pos = pos + 1; break; }
     }
 
     // ================================ plan v0.3 P6: SPECULATIVE DECODING ================================
