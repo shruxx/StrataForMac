@@ -50,6 +50,30 @@ class TestStrataRunner(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("-c") + 1], "131072")
         self.assertEqual(cmd[cmd.index("-ctk") + 1], "q8_0")
 
+    def test_gpu_budget_shared_memory(self):
+        G = strata_runner.GIB
+        kolibri = 47454113472
+        # 48 GB M5 Pro, working set ~36 GiB: the model does not fit, so the GPU gets 60% of what macOS leaves
+        self.assertEqual(strata_runner.gpu_budget(48 * G, 36 * G, kolibri), int(40 * G * 0.6))
+        self.assertEqual(strata_runner.fit_margin_mib(48 * G, 36 * G, kolibri), (36 * G - int(40 * G * 0.6)) // 2 ** 20)
+        # 64 GB: it fits whole, up to the working set
+        self.assertEqual(strata_runner.gpu_budget(64 * G, 48 * G, kolibri), 48 * G)
+        # a small model: the whole working set, and llama.cpp's own 1 GiB margin
+        self.assertEqual(strata_runner.fit_margin_mib(32 * G, 21 * G, 4 * G), 1024)
+        # GPU and the CPU-side page cache never exceed what is left after macOS's reserve
+        for ram in (16, 24, 32, 36, 48, 64, 96, 128):
+            b = strata_runner.gpu_budget(ram * G, int(ram * G * 0.75), kolibri)
+            self.assertLessEqual(b, ram * G - strata_runner.OS_RESERVE)
+
+    def test_model_bytes_counts_all_shards(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for i, n in ((1, 10), (2, 20)):
+                Path(d, f"m-0000{i}-of-00002.gguf").write_bytes(b"x" * n)
+            Path(d, "other.gguf").write_bytes(b"x" * 5)
+            self.assertEqual(strata_runner.model_bytes(Path(d, "m-00001-of-00002.gguf")), 30)
+            self.assertEqual(strata_runner.model_bytes(Path(d, "other.gguf")), 5)
+
     def test_perf_cores(self):
         cores = strata_runner.get_perf_cores()
         self.assertIsInstance(cores, int)

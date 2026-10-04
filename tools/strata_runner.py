@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -116,7 +117,69 @@ def parse_args(argv: list[str]) -> dict:
     return cfg
 
 
-def llama_server_cmd(llama_bin, model_path, max_context: int, port: int, threads: int, kv: str) -> list[str]:
+GIB = 1024 ** 3
+MIB = 1024 ** 2
+# what macOS, serve/server.py and the browser with the chat keep for themselves out of the shared memory
+OS_RESERVE = 8 * GIB
+# KV cache and compute buffers on top of the weights, for the "fits whole" check (--fit itself measures them)
+CTX_ALLOWANCE = 4 * GIB
+# when the model does not fit whole: the GPU's share of what is left after the reserve; the rest stays free as the
+# page cache the CPU-side experts are read through (they come from the SSD when it is too small)
+GPU_SHARE = 0.6
+
+
+def physical_memory() -> int:
+    """The Mac's unified memory in bytes (hw.memsize), 0 when unknown."""
+    try:
+        return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], stderr=subprocess.DEVNULL).strip())
+    except Exception:
+        return 0
+
+
+def metal_working_set(llama_bin) -> int:
+    """The Metal device's working set in bytes (recommendedMaxWorkingSetSize, or the iogpu.wired_limit_mb a user
+    set), as llama-server's --list-devices reports it ("MTL0: Apple M5 Pro (36864 MiB, 36863 MiB free)"); 0 when
+    unknown."""
+    try:
+        out = subprocess.run([str(llama_bin), "--list-devices"], capture_output=True, text=True, timeout=30)
+        m = re.search(r"MTL\d+:.*?\((\d+) MiB,", out.stdout + out.stderr)
+        return int(m.group(1)) * MIB if m else 0
+    except Exception:
+        return 0
+
+
+def model_bytes(model_path) -> int:
+    """The model's size on disk: all shards of a split GGUF (name-00001-of-0000N.gguf)."""
+    p = Path(model_path)
+    m = re.match(r"(.*)-\d{5}-of-(\d{5})\.gguf$", p.name)
+    if not m:
+        return p.stat().st_size
+    return sum(f.stat().st_size for f in p.parent.glob(f"{m.group(1)}-*-of-{m.group(2)}.gguf"))
+
+
+def gpu_budget(ram: int, working_set: int, model: int) -> int:
+    """How many bytes of the model, KV cache and compute buffers may live on the Metal GPU.
+
+    On Apple Silicon the GPU and the CPU share one memory.  llama.cpp's --fit plans against the GPU's working set
+    alone (~75% of the memory) and takes the CPU side as unlimited: with Kolibri-1 Q4_K_M (47.5 GB) on a 48 GB Mac
+    it put ~35 GB on the GPU, the experts left on the CPU side and macOS did not fit next to it, and the first
+    request failed with kIOGPUCommandBufferCallbackErrorOutOfMemory.  So: a model that fits the memory left after
+    OS_RESERVE goes on the GPU whole (up to its working set); a larger one gets GPU_SHARE of that memory on the GPU
+    and leaves the rest as page cache for its CPU-side experts."""
+    usable = max(ram - OS_RESERVE, 0)
+    if model + CTX_ALLOWANCE <= usable:
+        return min(working_set, usable)
+    return min(working_set, int(usable * GPU_SHARE))
+
+
+def fit_margin_mib(ram: int, working_set: int, model: int) -> int:
+    """--fit-target: the MiB --fit leaves free of the working set so that the GPU holds at most gpu_budget()
+    (1024, llama.cpp's default, when that is less)."""
+    return max((working_set - gpu_budget(ram, working_set, model)) // MIB, 1024)
+
+
+def llama_server_cmd(llama_bin, model_path, max_context: int, port: int, threads: int, kv: str,
+                     fit_target_mib: int | None = None) -> list[str]:
     """llama-server's command line.  No -ngl: an explicit layer count switches off llama.cpp's --fit, which otherwise
     keeps attention and the dense weights on the Metal GPU and moves only the sparse MoE experts of as many layers as
     needed to the CPU side when the whole model does not fit the GPU's working set (Strata's expert cache, the
@@ -127,6 +190,7 @@ def llama_server_cmd(llama_bin, model_path, max_context: int, port: int, threads
         "-m", str(model_path),
         "-c", str(max_context),
         "--fit", "on",
+        *(["--fit-target", str(fit_target_mib)] if fit_target_mib else []),
         "--port", str(port),
         "--host", "127.0.0.1",
         "--parallel", "1",
@@ -157,7 +221,20 @@ def run_serve(cfg: dict):
     threads = cfg["threads"] or get_perf_cores()
     port = get_free_port()
 
-    cmd = llama_server_cmd(llama_bin, model_path, max_context, port, threads, cfg.get("kv", "int8"))
+    # the GPU's share of the shared memory (gpu_budget); a margin in the config's "env" (LLAMA_ARG_FIT_TARGET) or
+    # an explicit budget (STRATA_GPU_BUDGET_GB) wins
+    ram, working_set, model = physical_memory(), metal_working_set(llama_bin), model_bytes(model_path)
+    fit_target = None
+    if os.environ.get("STRATA_GPU_BUDGET_GB") and working_set:
+        budget = int(float(os.environ["STRATA_GPU_BUDGET_GB"]) * GIB)
+        fit_target = max((working_set - budget) // MIB, 0)
+    elif not os.environ.get("LLAMA_ARG_FIT_TARGET") and ram and working_set:
+        fit_target = fit_margin_mib(ram, working_set, model)
+    if ram and working_set:
+        sys.stderr.write(f"[strata] memory: {ram / GIB:.0f} GiB shared, GPU working set {working_set / GIB:.1f} GiB, "
+                         f"model {model / GIB:.1f} GiB -> GPU budget "
+                         f"{(working_set - (fit_target or 1024) * MIB) / GIB:.1f} GiB\n")
+    cmd = llama_server_cmd(llama_bin, model_path, max_context, port, threads, cfg.get("kv", "int8"), fit_target)
     kv = cfg.get("kv", "int8")
 
     sys.stderr.write(f"[strata] starting Metal engine on port {port} (model: {Path(model_path).name}, ctx: {max_context}, threads: {threads}) ...\n")
@@ -238,6 +315,15 @@ def run_serve(cfg: dict):
             server_proc.wait(timeout=3)
         except Exception:
             server_proc.kill()
+
+
+def report_error(message: str):
+    """A failed request: the reason to the log and as `ERR` to serve/server.py, which ends the request with it."""
+    message = " ".join(message.split())
+    sys.stderr.write(f"[strata] {message}\n")
+    sys.stderr.flush()
+    sys.stdout.write(f"ERR {message}\n")
+    sys.stdout.flush()
 
 
 def handle_generation(line: str, port: int, cmd_queue: queue.Queue,
@@ -335,13 +421,20 @@ def handle_generation(line: str, port: int, cmd_queue: queue.Queue,
         resp = urllib.request.urlopen(req, timeout=120)
         active_resp_holder[0] = resp
     except Exception as e:
-        sys.stderr.write(f"[strata] failed to connect to llama-server: {e}\n")
-        sys.stdout.write(f"DONE 0 {prompt_n} 0.0 0.0 stop 0 0 0\n")
-        sys.stdout.flush()
+        # ERR, not an empty DONE: an empty DONE reads as a reply that ended without text ("still thinking")
+        detail = str(e)
+        if isinstance(e, urllib.error.HTTPError):
+            try:
+                detail += ": " + e.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                pass
+        report_error(f"llama-server did not take the request: {detail}")
         return
 
     # Check for STOP in a background watcher or polling
     stopped = False
+    finished = False
+    failure = None
 
     try:
         buffer = b""
@@ -379,6 +472,9 @@ def handle_generation(line: str, port: int, cmd_queue: queue.Queue,
                     data = json.loads(data_json)
                 except Exception:
                     continue
+                if data.get("error"):                    # llama-server's own reason (an SSE error event)
+                    err = data["error"]
+                    raise RuntimeError(err.get("message", err) if isinstance(err, dict) else err)
 
                 # Stream token ids
                 tokens = data.get("tokens")
@@ -398,13 +494,14 @@ def handle_generation(line: str, port: int, cmd_queue: queue.Queue,
                         finish_reason = "length"
                     else:
                         finish_reason = "stop"
+                    finished = True
                     break
 
         if decode_ms <= 0.0 and generated_count > 0:
             decode_ms = max(0.1, (time.monotonic() - start_gen) * 1000.0)
 
     except Exception as e:
-        sys.stderr.write(f"[strata] stream error: {e}\n")
+        failure = f"llama-server stopped the reply: {e}"
     finally:
         try:
             resp.close()
@@ -414,6 +511,10 @@ def handle_generation(line: str, port: int, cmd_queue: queue.Queue,
 
     if stopped:
         finish_reason = "stop"
+    elif failure or not finished:
+        # without its final event the reply did not end normally (llama-server crashed or closed the stream)
+        report_error(failure or f"llama-server ended the reply without finishing it ({generated_count} tokens)")
+        return
 
     sys.stdout.write(f"DONE {generated_count} {prompt_n} {prompt_ms:.1f} {decode_ms:.1f} {finish_reason} 0 0 0\n")
     sys.stdout.flush()
