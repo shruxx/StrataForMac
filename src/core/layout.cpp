@@ -44,6 +44,42 @@ bool fail(std::string& err, const LayerView& v, const char* suffix, const char* 
 
 bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std::string& err) {
     const LayerView v(t, layer);
+
+    if (g.arch == ArchitectureType::Kolibri1) {
+        const Want2 want_kolibri[] = {
+            {"ffn_gate_inp.weight", g.n_embd, g.n_expert, false, false},
+            {"ffn_gate_shexp.weight", g.n_embd, g.n_ff, false, false},
+            {"ffn_up_shexp.weight", g.n_embd, g.n_ff, false, false},
+            {"ffn_down_shexp.weight", g.n_ff, g.n_embd, false, false},
+            {"attn_q.weight", g.n_embd, g.n_head * g.head_dim, false, false},
+            {"attn_k.weight", g.n_embd, g.n_head_kv * g.head_dim, false, false},
+            {"attn_v.weight", g.n_embd, g.n_head_kv * g.head_dim, false, false},
+            {"attn_output.weight", g.n_head * g.head_dim, g.n_embd, false, false},
+        };
+        for (const Want2& w : want_kolibri) {
+            const WeightRef* r = v.get(w.suffix);
+            if (!r) {
+                err = "layer " + std::to_string(layer) + ": missing " + v.name(w.suffix);
+                return false;
+            }
+            if (r->ne0 != w.ne0) return fail(err, v, w.suffix, "ne0", r->ne0, w.ne0);
+            if (r->ne1 != w.ne1) return fail(err, v, w.suffix, "ne1", r->ne1, w.ne1);
+        }
+        const Want1 want1_kolibri[] = {
+            {"attn_norm.weight", g.n_embd, WeightKind::F32, false, false},
+            {"ffn_norm.weight", g.n_embd, WeightKind::F32, false, false},
+        };
+        for (const Want1& w : want1_kolibri) {
+            const WeightRef* r = v.get(w.suffix);
+            if (!r) {
+                err = "layer " + std::to_string(layer) + ": missing " + v.name(w.suffix);
+                return false;
+            }
+            if (r->elements != w.elements) return fail(err, v, w.suffix, "elements", r->elements, w.elements);
+        }
+        return true;
+    }
+
     const bool qsa = is_qsa_layer(g, layer);
 
     // ---- the 2-D tensor set, per layer family

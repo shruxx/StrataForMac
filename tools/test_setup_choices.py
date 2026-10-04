@@ -110,9 +110,10 @@ class GgufDirUnsupported(unittest.TestCase):
     def test_quant_names(self):
         for name, want in (("Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf", "UD-IQ3_XXS"),
                            ("Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf", "UD-Q2_K_XL"),
-                           ("model-Q4_K_M.gguf", "Q4_K_M"),
+                           ("model-Q5_K_M.gguf", "Q5_K_M"),
                            ("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf", None),
                            ("Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf", None),
+                           ("Kolibri-1-Q4_K_M.gguf", None),
                            ("my-IQ3_XXS-00001-of-00003.gguf", None), ("mmproj-F16.gguf", None),
                            ("a-00001-of-00002.gguf", None)):
             self.assertEqual(setup.gguf_unsupported(name), want, name)

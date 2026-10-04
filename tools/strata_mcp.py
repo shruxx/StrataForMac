@@ -57,6 +57,8 @@ FALLBACK_MODELS = {
     "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
                        "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3,
               "families": ("qwen",)},
+    "Q4_K_M": {"about": "4-bit medium quant (Kolibri-1 78B): ~44 GB download, high quality, fits 48 GB Mac or 32 GB low-RAM",
+               "download_gb": 44.5, "ram_gb": 48, "arena_gb": 38.0, "families": ("kolibri",)},
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
     "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), EXPERIMENTAL: the best quality, but most experts come from the "
@@ -69,6 +71,8 @@ FALLBACK_FAMILIES = {
                                              "authors' numbers)", "tag": "swift-"},
     "coder": {"title": "Qwen3.8-Flash-Next Coder", "about": "half the experts (code, tools, images kept): needs ~32 GB "
                                                             "of RAM, faster; weaker outside coding", "tag": "coder-"},
+    "kolibri": {"title": "Kolibri-1 (Aleph Alpha)", "about": "78.1B MoE (3.46B active per token), Apache 2.0, state-of-the-art German & English, 262K context",
+                "tag": "kolibri-"},
     "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "about": "4-bit, 111 GB download, most experts read from the "
                                                                   "SSD: slow (7-8.5 tokens/s on a 64 GB PC)",
                 "tag": "unsloth-", "experimental": True, "vision": False},
@@ -126,6 +130,12 @@ def proc_identity(pid) -> str | None:
             return f"win:{(c.dwHighDateTime << 32) | c.dwLowDateTime}"
         finally:
             _k32.CloseHandle(h)
+    try:
+        wp, _ = os.waitpid(pid, os.WNOHANG)
+        if wp == pid:
+            return None
+    except (ChildProcessError, OSError):
+        pass
     stat = Path(f"/proc/{pid}/stat")
     if Path("/proc/self/stat").exists():
         try:
@@ -135,6 +145,17 @@ def proc_identity(pid) -> str | None:
         if fields[0] in ("Z", "X"):                     # a zombie has ended
             return None
         return f"linux:{fields[19]}"                    # field 22 of stat: the start time in clock ticks
+    if platform.system() == "Darwin":
+        try:
+            r = subprocess.run(["ps", "-o", "state=,lstart=", "-p", str(pid)], capture_output=True, text=True)
+            if r.returncode != 0:
+                return None
+            line = r.stdout.strip()
+            if not line or line.startswith("Z"):
+                return None
+            return f"mac:{line[1:].strip()}"
+        except Exception:
+            return None
     try:                                                # elsewhere (no /proc): alive, without a start time
         os.kill(pid, 0)
         return "pid"
@@ -373,6 +394,8 @@ def system_folders() -> list[Path]:
         env = [os.environ.get(k) for k in ("SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
                                             "ProgramW6432")]
         return [norm(p) for p in env if p]
+    if platform.system() == "Darwin":
+        return [norm(p) for p in ("/System", "/Library", "/bin", "/sbin", "/usr", "/private/etc", "/private/var/root")]
     return [norm(p) for p in ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/proc", "/run", "/sbin",
                               "/sys", "/usr", "/var", "/snap")]
 
@@ -1254,7 +1277,7 @@ class Tools:
         if backend == "hip" and WIN:
             raise ToolError("the AMD (hip) backend runs on Linux only; on Windows Strata needs an NVIDIA RTX 20 "
                             "series or newer card")
-        if sys.version_info < (3, 10) or (WIN and sys.maxsize <= 2**32):
+        if s.python_override is None and (sys.version_info < (3, 10) or (WIN and sys.maxsize <= 2**32)):
             raise ToolError("this Python is too old or 32-bit: Strata's setup needs 64-bit Python 3.10+; run "
                             + ("START-HERE.bat" if WIN else "./setup.sh") + " once instead (it installs Python)")
         hw = s.hardware()
@@ -1764,8 +1787,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.install_job:
         return install_job(a.install_job)
-    if sys.version_info < (3, 10):
-        log("Python 3.10 or newer is needed")
+    if sys.version_info < (3, 9):
+        log("Python 3.9 or newer is needed")
         return 2
     root = Path(a.root).expanduser().resolve() if a.root else DEFAULT_ROOT
     if not (root / "setup.py").is_file() or not (root / "serve" / "server.py").is_file():

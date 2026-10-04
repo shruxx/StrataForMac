@@ -108,6 +108,8 @@ is faster, larger is a bit smarter.
   CJK text (#438): for those, take Q2_0, IQ2_XS or IQ3_S, which keep every expert.
 - **[Swift 1.5](docs/MODELS.md#swift-15)** - a fine-tune that thinks much shorter before it answers, so you get the
   answer sooner, at about the same quality.
+- **[Kolibri-1](docs/MODELS.md#kolibri-1-aleph-alpha)** - Aleph Alpha's sovereign 78.1B MoE (3.46B active per token, Apache 2.0):
+  state-of-the-art German and English with 262K context, fits 48 GB Unified Memory in Q4_K_M.
 - **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (experimental) - the closest to the full
   model, but most of it is read from the SSD while it answers: 7-8.5 tokens/s on a 64 GB PC.
 - **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** - a manual setup, not in the

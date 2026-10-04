@@ -22,9 +22,15 @@
 
 namespace strata::core {
 
+enum class ArchitectureType {
+    Qwen4Exp,
+    Kolibri1,
+};
+
 /// The model's geometry, taken from `docs/semantics.md` and the artifact's own metadata.  Every field here
 /// is a number a kernel depends on, so a change is a change to a kernel contract and not a tuning knob.
 struct ModelGeometry {
+    ArchitectureType arch = ArchitectureType::Qwen4Exp;
     int64_t n_embd = 2560;
     int64_t n_layers = 48;
     int64_t qsa_interval = 4;      ///< every 4th layer is full attention: layers 3, 7, ... 47
@@ -37,12 +43,13 @@ struct ModelGeometry {
     int64_t ssm_conv_channels = 10240;   ///< 2*128*16 + 128*48
     int64_t ssm_value_dim = 6144;        ///< 128 * 48
 
-    // QSA (12 layers)
+    // QSA / Attention (12 layers on Qwen; all layers on Kolibri)
     int64_t n_head = 24;
     int64_t n_head_kv = 2;
     int64_t head_dim = 256;
     int64_t idx_q_heads = 4;
     int64_t idx_key_dim = 128;
+    int64_t sliding_window = 0;          ///< 513 for Kolibri-1
 
     // gated residual, on every layer
     int64_t hc = 4;
@@ -50,12 +57,31 @@ struct ModelGeometry {
 
     // MoE, on every layer
     int64_t n_expert = 512;
+    int64_t n_expert_used = 10;
     int64_t n_ff = 640;
 
     int64_t hc_dim() const { return hc * n_embd; }
     /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
     int64_t n_qsa_layers() const { return n_layers / qsa_interval; }
     int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
+
+    static ModelGeometry kolibri1() {
+        ModelGeometry g;
+        g.arch = ArchitectureType::Kolibri1;
+        g.n_embd = 6144;
+        g.n_layers = 50;
+        g.qsa_interval = 5;      // 4:1 sliding window vs full attention pattern
+        g.n_head = 48;
+        g.n_head_kv = 4;
+        g.head_dim = 128;
+        g.sliding_window = 513;
+        g.n_expert = 384;
+        g.n_expert_used = 6;
+        g.n_ff = 1536;
+        g.hc = 0;
+        g.hc_lr = 0;
+        return g;
+    }
 };
 
 /// True for the full-attention layers.  `docs/semantics.md` gives this twice over - `full_attention_interval

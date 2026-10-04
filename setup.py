@@ -68,6 +68,7 @@ HF_REVISIONS = {
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
+    "Hob-forge/Kolibri-1-GGUF": "b08405e141706457126fa75b9f2f9e0729b30d0a",                          # 2026-10-03
 }
 
 
@@ -121,6 +122,9 @@ MODELS = {
     "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
                        "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3,
               "families": ("qwen",)},
+    # Aleph Alpha's 78.1B MoE: 384 routed + 1 shared expert, 3.46B active per token; fits 48 GB Mac or 32 GB low-RAM
+    "Q4_K_M": {"about": "4-bit medium quant (Kolibri-1 78B): ~44 GB download, high quality, fits 48 GB Mac or 32 GB low-RAM",
+               "download_gb": 44.5, "ram_gb": 48, "arena_gb": 38.0, "families": ("kolibri",)},
     # the Coder release: 256 of the 512 experts kept (the ones code, tools and vision use), IQ2_S-IQ4_XS like IQ3_S
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
@@ -174,6 +178,15 @@ FAMILIES = {
               "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF"),
               "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-coder",
               "profile": "expert-profile-coder.bin"},
+    # Aleph Alpha's 78.1B sovereign MoE (3.46B active): state-of-the-art German & English, Apache 2.0
+    "kolibri": {"title": "Kolibri-1 (Aleph Alpha)", "by": "Aleph Alpha (Heidelberg); GGUF by Hob-forge",
+                "about": "78.1B MoE (3.46B active per token), Apache 2.0, state-of-the-art German & English, 262K context",
+                "hf": hf("Hob-forge/Kolibri-1-GGUF"),
+                "file": "Kolibri-1-{q}.gguf", "shards": 1, "tag": "kolibri-",
+                "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
+                "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+                "name": "kolibri-1", "license": "Apache 2.0: https://huggingface.co/Aleph-Alpha/Kolibri-1",
+                "vision": False},
     # EXPERIMENTAL: Unsloth's UD-Q4_K_XL of the original model (docs/UNSLOTH_Q4.md): four shards, no images yet
     "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's 4-bit quantization (EXPERIMENTAL)",
                 "about": "4-bit, 111 GB download, most experts read from the SSD: slow (7-8.5 tokens/s on a 64 GB PC)",
@@ -433,6 +446,8 @@ def apple_silicon_gpus() -> list[dict]:
         "vram_gb": ram,
         "arch": "apple_silicon",
         "driver": "Metal 4",
+        "count": 1,
+        "archs": ["apple_silicon"],
     }]
 
 
@@ -1452,7 +1467,7 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
     (not published for this version, no internet) or has no code for the card."""
     eng = ROOT / "engine"
     info = eng / "BUILD.json"
-    if info.exists() and (eng / EXE).exists():
+    if info.exists() and ((eng / EXE).exists() or (eng / "strata.exe").exists()):
         try:
             meta = json.loads(info.read_text())
         except ValueError:
@@ -1492,7 +1507,7 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
         meta = {}
     ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
     why = None
-    if meta.get("backend") != "hip" or not (tmp / EXE).exists():
+    if meta.get("backend") != "hip" or not ((tmp / EXE).exists() or (tmp / "strata.exe").exists()):
         why = "it is not a HIP engine"
     elif ver < WIN_HIP_MIN_ENGINE:
         why = f"it is version {meta.get('version')}; this setup needs {'.'.join(map(str, WIN_HIP_MIN_ENGINE))}"
@@ -3775,7 +3790,7 @@ def main() -> int:
             cfg["env"] = {"STRATA_HIPBLASLT_TUNING": str(table)}
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
-    if gpu["count"] > 1 or a.gpu is not None:
+    if gpu.get("count", 1) > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]                      # the engine is told this card (issue #51)
         cfg["gpus_asked"] = True                       # chosen at setup: not asked again at start
     if multi:                                          # a layer split across these cards (the server adds the flag)

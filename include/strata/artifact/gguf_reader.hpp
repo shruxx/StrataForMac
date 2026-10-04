@@ -573,6 +573,7 @@ private:
 // ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be
 // refused with a precise error rather than silently mis-run.
 struct Qwen4ExpGuard {
+    std::string arch = "qwen4exp";
     uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
              head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
                                   // fewer experts than the canonical 512; the graph reads the true value
@@ -581,24 +582,33 @@ struct Qwen4ExpGuard {
 inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
+    const std::string a = arch->s;
+    if (a != "qwen4exp" && a != "kolibri" && a != "kolibri1") {
+        return "architecture is '" + a + "', this engine supports 'qwen4exp' and 'kolibri'";
+    }
+    const bool is_kolibri = (a == "kolibri" || a == "kolibri1");
+    const uint64_t exp_blocks = is_kolibri ? 50 : want.block_count;
+    const uint64_t exp_hidden = is_kolibri ? 6144 : want.hidden;
+    const uint64_t exp_heads = is_kolibri ? 48 : want.head_count;
+    const uint64_t exp_heads_kv = is_kolibri ? 4 : want.head_count_kv;
+
     struct Req {
-        const char* key;
+        std::string key;
         uint64_t want;
     };
     const Req reqs[] = {
-        {"qwen4exp.block_count", want.block_count},
-        {"qwen4exp.embedding_length", want.hidden},
-        {"qwen4exp.expert_count", want.experts},
-        {"qwen4exp.expert_used_count", want.experts_used},
-        {"qwen4exp.attention.head_count", want.head_count},
-        {"qwen4exp.attention.head_count_kv", want.head_count_kv},
+        {a + ".block_count", exp_blocks},
+        {a + ".embedding_length", exp_hidden},
+        {a + ".expert_count", is_kolibri ? 384 : want.experts},
+        {a + ".expert_used_count", is_kolibri ? 6 : want.experts_used},
+        {a + ".attention.head_count", exp_heads},
+        {a + ".attention.head_count_kv", exp_heads_kv},
     };
     for (const auto& r : reqs) {
-        const MetaValue* v = g.get(r.key);
+        const MetaValue* v = g.get(r.key.c_str());
         if (!v) return std::string("missing ") + r.key;
         if (r.want && v->u != r.want)
-            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+            return r.key + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
     }
     return {}; // empty == ok
 }

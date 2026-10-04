@@ -55,7 +55,8 @@ def normalize(v, t: Path):
     if isinstance(v, list):
         return [normalize(x, t) for x in v]
     if isinstance(v, str):
-        return v.replace(str(t), "<T>").replace("\\", "/").replace(setup.EXE, "<EXE>")
+        s = v.replace(str(t), "<T>").replace("\\", "/")
+        return s.replace("/engine/" + setup.EXE, "/engine/<EXE>")
     return v
 
 
@@ -98,6 +99,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "save_settings", lambda s: None),
             mock.patch.object(setup, "gpus", lambda: found),
             mock.patch.object(setup, "amd_gpus", lambda: []),
+            mock.patch.object(setup, "apple_silicon_gpus", lambda: []),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, avx512)),
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
@@ -106,6 +108,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: t / "llama.cpp"),
             mock.patch.object(setup, "get_prebuilt", lambda *a, **k: eng),
+            mock.patch.object(setup, "build_engine_macos", lambda *a, **k: eng),
             mock.patch.object(setup, "update_installed_engine", lambda *a, **k: None),
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "check_shards", lambda shards: None),

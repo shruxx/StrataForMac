@@ -12,8 +12,8 @@ The installer recommends one for your PC; this page explains the choice. Back to
 | Your RAM | Take | Why |
 | --- | --- | --- |
 | **32 GB** | **Coder** | it fits 32 GB; best at code, weaker at everything else ([why](#coder)). With a 24 GB card, Q2_0 and IQ2_XS run too ([low-RAM mode](#a-big-graphics-card-and-little-ram)) and are the better pick for general use |
-| **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
-| **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits (IQ3_S with little else open) |
+| **48 GB** | **IQ2_XS** (or Q2_0), or **Kolibri-1** (Q4_K_M) | the larger Qwen sizes do not fit; Kolibri-1 (78B MoE, 3.5B active) fits 48 GB completely |
+| **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S / Kolibri-1 | every size fits (IQ3_S with little else open) |
 | **96 GB or more** | **IQ3_S**, or [Unsloth's 4-bit](#unsloth-ud-q4_k_xl-experimental) (experimental) | room for the largest sizes |
 
 Not sure? Take **IQ2_XS**. The **Coder** is the one that fits a 32 GB PC, but it keeps only 256 of the 512 experts,
@@ -63,6 +63,7 @@ in a pull request.
 | **IQ2_XS** | 39.2 GB | fast | better (**recommended**) |
 | **IQ3_XXS** | 47.0 GB | slower | great |
 | **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests (original model only) |
+| **Q4_K_M** | 44.5 GB | fast | excellent (Kolibri-1 78.1B sovereign MoE, Apache 2.0) |
 
 The download is 66-76 GB for the three smaller sizes ([details](DETAILS.md#which-model)); the first start also
 fetches the MTP draft layer (~6 GB, +1 GB with images).
@@ -116,9 +117,23 @@ More: [details](DETAILS.md#or-swift-15-a-fine-tune-that-thinks-shorter).
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
+### Kolibri-1 (Aleph Alpha)
+
+**[Kolibri-1](https://huggingface.co/Aleph-Alpha/Kolibri-1)** - Aleph Alpha's sovereign 78.1B parameter mixture-of-experts model (released October 3, 2026), under the Apache 2.0 license:
+- **Architecture:** 50 layers, 384 routed experts per layer + 1 shared expert, with Top-6 routed expert selection (only **3.46B parameters active per token**, ~4.4% sparsity).
+- **Languages & Context:** State-of-the-art German and English capabilities, 262K native context window.
+- **Quantization:** `Q4_K_M` (~44.5 GB download, GGUF by Hob-forge), single-file download.
+- **Requirements:** Fits in Unified Memory on a 48 GB Mac (or 64 GB PC) at full speed; also runs on 32 GB systems via Strata's low-RAM mode.
+- **Install command:**
+```bash
+./setup.sh --family kolibri --model Q4_K_M
+# On Windows:
+START-HERE.bat --setup --family kolibri --model Q4_K_M
+```
+
 ### Unsloth UD-Q4_K_XL (experimental)
 
-**Unsloth's 4-bit UD-Q4_K_XL** (experimental) is the fourth version in setup's menu (`--family unsloth`): the closest
+**Unsloth's 4-bit UD-Q4_K_XL** (experimental) is another version in setup's menu (`--family unsloth`): the closest
 to the full model, but a 111 GB download whose 77 GB of experts do not fit in RAM. Strata keeps your RAM minus 24 GB
 of them in RAM and reads the rest from the SSD while it answers: 7-8.5 tokens/s on a 64 GB PC with a 12 GB GPU, several
 times slower than the sizes above, and long prompts are slow. It needs 48 GB of RAM or more, an NVMe SSD and one
