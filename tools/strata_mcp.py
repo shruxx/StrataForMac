@@ -629,7 +629,18 @@ class Strata:
                 amd = []
             if not amd and shutil.which("rocm-smi"):
                 amd = rocm_smi_gpus()
-        hw["gpus"] = nv + amd
+        apple = []
+        if platform.system() == "Darwin":
+            try:
+                apple = S.apple_silicon_gpus() if S else own_apple_silicon_gpus()
+                for g in apple:
+                    g["vendor"] = "apple"
+                    g["vram_gb"] = round(g["vram_gb"], 1)
+                    g["problem"] = None
+                    g["usable"] = True
+            except Exception:                           # noqa: BLE001
+                apple = []
+        hw["gpus"] = nv + amd + apple
         if WIN:
             hw["display_adapters"] = windows_video_controllers()
         hw["nvidia_smi"] = bool(shutil.which("nvidia-smi"))
@@ -644,14 +655,14 @@ class Strata:
         usable = [g for g in hw.get("gpus", []) if g.get("usable")]
         ram = hw.get("ram_gb") or 0
         if not usable:
-            why = ("no NVIDIA RTX 20-series-or-newer GPU found (nvidia-smi did not list one)"
+            why = ("no NVIDIA RTX 20-series-or-newer GPU, AMD Radeon GPU, or Apple Silicon Mac found"
                    + ("; AMD cards run on Linux only" if WIN and any(
                        "amd" in str(a.get("name", "")).lower() or "radeon" in str(a.get("name", "")).lower()
                        for a in hw.get("display_adapters", [])) else ""))
             return {"family": None, "model": None, "why": why}
         best = max(usable, key=lambda g: (round(g["vram_gb"]), -g.get("index", 0)))
         vram = best["vram_gb"]
-        backend = "hip" if best.get("vendor") == "amd" else "cuda"
+        backend = "metal" if best.get("vendor") == "apple" else ("hip" if best.get("vendor") == "amd" else "cuda")
 
         def low_fits(m):
             try:
@@ -659,7 +670,15 @@ class Strata:
             except Exception:                           # noqa: BLE001
                 return False
         notes = []
-        if ram >= 60:
+        is_apple = best.get("vendor") == "apple"
+        if is_apple:
+            if ram <= 36:
+                fam, model, why = "coder", "IQ1_M", f"{ram:.0f} GB Unified Memory: Coder (IQ1_M) recommended for 32 GB Macs"
+            elif ram >= 60:
+                fam, model, why = "qwen", "IQ3_XXS", f"{ram:.0f} GB Unified Memory: setup's own pick from 60 GB (better quality)"
+            else:
+                fam, model, why = "qwen", "IQ2_XS", f"{ram:.0f} GB Unified Memory: the full model's fastest size fits"
+        elif ram >= 60:
             fam, model, why = "qwen", "IQ3_XXS", f"{ram:.0f} GB of RAM: setup's own pick from 60 GB (better quality)"
         elif ram >= models["Q2_0"]["ram_gb"] - 4:
             fam, model, why = "qwen", "Q2_0", f"{ram:.0f} GB of RAM: the full model's fastest size fits"
@@ -676,12 +695,17 @@ class Strata:
         ctx = 32768 if vram < 14 else 65536 if vram < 20 else 131072
         if vram < 11:
             notes.append("less than 12 GB of VRAM: it runs, but slowly (most experts stay on the CPU)")
-        if hw.get("cpu", {}).get("avx2") is False:
+        if hw.get("cpu", {}).get("avx2") is False and not is_apple:
             return {"family": None, "model": None, "why": "this CPU has no AVX2; Strata needs at least AVX2"}
         if backend == "hip":
             notes.append("AMD (experimental, Linux): the engine is compiled during setup; no images")
-        cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
-               f" --yes --family {fam} --model {model} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
+        elif backend == "metal":
+            notes.append("Apple Silicon: native Metal & Accelerate acceleration")
+        if is_apple:
+            cmd = f"./setup.sh --setup --yes --family {fam} --model {model} --context {ctx}"
+        else:
+            cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
+                   f" --yes --family {fam} --model {model} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
         return {"family": fam, "model": model, "title": families[fam]["title"] + " " + model, "context": ctx,
                 "backend": backend, "gpu": {k: best.get(k) for k in ("index", "name", "vram_gb")},
                 "download_gb": models[model]["download_gb"], "why": why, "notes": notes, "setup_command": cmd}
@@ -851,6 +875,12 @@ def own_ram_gb() -> float:
         m.dwLength = ctypes.sizeof(MS)
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
         return m.tp / 2**30
+    if platform.system() == "Darwin":
+        try:
+            val = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
+            return int(val) / (1024**3)
+        except Exception:
+            pass
     try:
         for line in open("/proc/meminfo"):
             if line.startswith("MemTotal"):
@@ -858,6 +888,37 @@ def own_ram_gb() -> float:
     except OSError:
         pass
     return 0.0
+
+
+def own_apple_silicon_gpus() -> list:
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return []
+    ram = own_ram_gb()
+    cores = ""
+    try:
+        s = run_quiet(["system_profiler", "SPDisplaysDataType"])
+        match = re.search(r"Total Number of Cores:\s*(\d+)", s)
+        if match:
+            cores = f" ({match.group(1)} GPU cores)"
+    except Exception:
+        pass
+    name = "Apple Silicon"
+    try:
+        val = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"]).decode().strip()
+        if val:
+            name = val
+    except Exception:
+        pass
+    return [{
+        "index": 0,
+        "name": f"{name}{cores}",
+        "vram_gb": ram,
+        "arch": "apple_silicon",
+        "driver": "Metal",
+        "vendor": "apple",
+        "usable": True,
+        "problem": None,
+    }]
 
 
 def own_nvidia_gpus() -> list:
@@ -961,8 +1022,8 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                      "description": "one GPU, as nvidia-smi numbers them (default: the one with the most VRAM)"},
              "gpus": {"type": "string", "pattern": GPUS_PATTERN, "maxLength": 40,
                       "description": "several GPUs sharing the model: '0,2' or 'all' (experimental)"},
-             "backend": {"type": "string", "enum": ["auto", "cuda", "hip"],
-                         "description": "auto (default), cuda = NVIDIA, hip = AMD on Linux (experimental)"},
+             "backend": {"type": "string", "enum": ["auto", "cuda", "hip", "metal"],
+                         "description": "auto (default), cuda = NVIDIA, hip = AMD on Linux, metal = Apple Silicon"},
              "low_ram": {"type": "string", "enum": ["auto", "on", "off", "resident", "mmap"],
                          "description": "setup's low-RAM mode (default auto)"},
              "port": {**port, "description": "the port the model will listen on (default 8080)"},

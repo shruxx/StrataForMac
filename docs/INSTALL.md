@@ -1,10 +1,10 @@
 # Installing Strata
 
-Everything about installing, starting, updating and configuring Strata, on Windows and Linux, with an NVIDIA or an
-AMD graphics card. The short version is in the [README](../README.md#install); an AI coding assistant can do all of
-this for you with [AI_SETUP.md](AI_SETUP.md).
+Everything about installing, starting, updating and configuring Strata, on macOS (Apple Silicon), Windows and Linux, with
+Apple Silicon, NVIDIA or AMD graphics hardware. The short version is in the [README](../README.md#install); an AI
+coding assistant can do all of this for you with [AI_SETUP.md](AI_SETUP.md). Detailed macOS architecture notes are in [MACOS.md](MACOS.md).
 
-> **On this page:** [What you need](#what-you-need) · [Windows](#windows) · [Linux](#linux) ·
+> **On this page:** [What you need](#what-you-need) · [macOS](#macos-apple-silicon) · [Windows](#windows) · [Linux](#linux) ·
 > [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) · [Updating](#updating) ·
 > [Where things are stored](#where-things-are-stored) · [Setup's questions](#setups-questions) ·
 > [Tuning](#tuning-for-your-pc) · [All options](#options-without-questions)
@@ -13,24 +13,40 @@ this for you with [AI_SETUP.md](AI_SETUP.md).
 
 | | |
 | --- | --- |
-| **GPU** | **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards). |
-| **RAM** | Enough for the size you pick ([which model](MODELS.md#pick-by-ram)); **64 GB** runs every size. A big GPU makes up for less RAM - the [low-RAM mode](MODELS.md#a-big-graphics-card-and-little-ram). |
-| **CPU** | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. |
-| **Disk** | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. On Linux with an AMD card, ROCm takes ~10 GB more when setup installs it. An NVMe SSD is strongly recommended: it makes the first start much faster. |
-| **OS** | Windows 10/11, or Linux (Ubuntu 22.04/24.04 get everything installed automatically). |
-| **Driver** | **NVIDIA:** a current driver, version 580 or newer ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA App). **AMD:** on Linux the kernel's amdgpu driver (no ROCm install needed); on Windows a current AMD Software: Adrenalin Edition driver ([amd.com/support](https://www.amd.com/en/support)). |
+| **GPU / Platform** | **Apple Silicon Mac** (M1/M2/M3/M4: base, Pro, Max, Ultra) with Unified Memory. **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards) and [MACOS.md](MACOS.md). |
+| **RAM** | Enough for the size you pick ([which model](MODELS.md#pick-by-ram)); **64 GB** runs every size. On Apple Silicon, RAM is Unified Memory shared between CPU and GPU. 32 GB fits the Coder (IQ1_M). |
+| **CPU** | Apple Silicon ARM64 (NEON + Accelerate framework) or x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). |
+| **Disk** | ~70-80 GB free for the model (Coder IQ1_M is ~23 GB), ~6 GB for the MTP layer (+1 GB with images). An SSD (internal NVMe or Mac internal storage) is strongly recommended. |
+| **OS** | macOS 12+ on Apple Silicon, Windows 10/11, or Linux (Ubuntu 22.04/24.04 get everything installed automatically). |
+| **Driver / Tools** | **macOS:** built-in Metal and Apple Command Line Tools (`xcode-select --install`). **NVIDIA:** a current driver, version 580 or newer ([nvidia.com/drivers](https://www.nvidia.com/drivers)). **AMD:** on Linux the kernel's amdgpu driver; on Windows a current AMD Software: Adrenalin Edition driver. |
 
-The driver is the only thing you install yourself. Everything else - Python, the engine, the model - is set up for
-you the first time: Python 3.12 if you have none (for your user account, no admin), a private Python environment in
-`.venv/`, the Strata engine, the model and the MTP draft layer. On NVIDIA it uses the ready-made engine for RTX
-20/30/40/50 and NVIDIA's CUDA libraries from pip (~0.4 GB); if no ready-made engine fits your PC, it offers to install
-the build tools (Visual Studio Build Tools + CUDA Toolkit on Windows, `build-essential` + CUDA on Ubuntu) and compiles
-the engine for your GPU (asks first; 20-40 minutes once). More: [details](DETAILS.md#before-you-start).
+The driver / command line tools are the only thing you install yourself. Everything else - Python, the engine, the model - is set up for
+you the first time: Python 3.12/3.13 if needed, a private Python environment in `.venv/`, the Strata engine, the model and the MTP draft layer.
+On macOS, setup compiles the native engine and Metal image encoder in under 30 seconds using Apple Clang. On NVIDIA/AMD PCs, it uses ready-made engines or compiles with CUDA/ROCm.
+
+## macOS (Apple Silicon)
+
+```bash
+git clone https://github.com/shruxx/StrataForMac.git
+cd StrataForMac
+./setup.sh
+```
+
+Setup finds your Apple Silicon chip and RAM, compiles the native Darwin engine and Metal vision encoder (`strata-vision`) automatically,
+and asks which model to download. For 32 GB Macs (e.g. M1 Max 32 GB), Coder `IQ1_M` is recommended.
+
+For unattended install:
+```bash
+./setup.sh --yes --family coder --model IQ1_M
+```
+
+Your browser opens `http://127.0.0.1:8080` once the model is loaded. Later runs of `./setup.sh` start the model directly.
+More details: [MACOS.md](MACOS.md).
 
 ## Windows
 
-1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or
-   `git clone` it).
+1. [Download this project](https://github.com/shruxx/StrataForMac/archive/refs/heads/main.zip) and unzip it (or
+   `git clone https://github.com/shruxx/StrataForMac.git`).
 2. Double-click **`START-HERE.bat`**.
 3. Answer a few questions - or just press Enter each time for the recommended choice ([the questions](#setups-questions)).
 

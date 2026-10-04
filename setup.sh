@@ -4,7 +4,9 @@ cd "$(dirname "$0")" || exit 1
 
 if [ "$(uname -s)" = "Darwin" ]; then
   export DEVELOPER_DIR="/Library/Developer/CommandLineTools"
+  export PATH="$PWD/.venv/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 fi
+
 
 # Python 3.10+ that can make a venv WITH pip: Debian/Ubuntu ship `venv` without `ensurepip` (that is the separate
 # python3-venv package), and a venv made without it has no pip
@@ -56,4 +58,5 @@ if [ ! -x .venv/bin/python ]; then
   # a private environment inside this folder (system Python stays untouched; newer distros refuse global pip)
   $PY -m venv .venv || { rm -rf .venv; echo "could not create .venv"; exit 1; }
 fi
+export PATH="$PWD/.venv/bin:$PATH"
 exec .venv/bin/python setup.py "$@"

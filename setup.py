@@ -2001,19 +2001,60 @@ def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:
     return vision
 
 
+def find_or_install_cmake() -> str:
+    c = shutil.which("cmake")
+    if c:
+        return c
+    py_bin = Path(sys.executable).parent / "cmake"
+    if py_bin.is_file() and os.access(py_bin, os.X_OK):
+        return str(py_bin)
+    for candidate in [
+        "/opt/homebrew/bin/cmake",
+        "/usr/local/bin/cmake",
+        str(Path.home() / ".local" / "bin" / "cmake"),
+    ]:
+        p = Path(candidate)
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    say("  cmake not found in PATH; installing cmake via pip ...")
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "cmake"], check=True)
+        if py_bin.is_file() and os.access(py_bin, os.X_OK):
+            return str(py_bin)
+        c = shutil.which("cmake")
+        if c:
+            return c
+    except Exception as e:
+        warn(f"pip install cmake failed: {e}")
+    if shutil.which("brew"):
+        say("  Installing cmake via Homebrew ...")
+        try:
+            subprocess.run(["brew", "install", "cmake"], check=True)
+            c = shutil.which("cmake") or "/opt/homebrew/bin/cmake"
+            if Path(c).is_file() and os.access(Path(c), os.X_OK):
+                return str(c)
+        except Exception as e:
+            warn(f"brew install cmake failed: {e}")
+    fail("cmake is required to build the Strata engine on macOS",
+         "Install it with 'brew install cmake' or 'pip install cmake', then run setup again.")
+
+
 def build_engine_macos(vision="none") -> Path:
     eng = ROOT / "engine"
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
+    cmake_bin = find_or_install_cmake()
     say("  Building Strata engine and tools for macOS (Apple Silicon) ...")
     build_dir = ROOT / "build"
     env = os.environ.copy()
     if "DEVELOPER_DIR" not in env:
         env["DEVELOPER_DIR"] = "/Library/Developer/CommandLineTools"
-    cmake_cmd = ["cmake", "-B", str(build_dir), "-DSTRATA_BUILD_TESTS=OFF"]
+    cmake_dir = str(Path(cmake_bin).parent)
+    env["PATH"] = f"{cmake_dir}:/opt/homebrew/bin:/usr/local/bin:{env.get('PATH', '')}"
+    cmake_cmd = [cmake_bin, "-B", str(build_dir), "-DSTRATA_BUILD_TESTS=OFF"]
     subprocess.run(cmake_cmd, cwd=str(ROOT), check=True, env=env)
     targets = ["strata-gguf", "strata-plan", "strata-dequant", "strata_kernels_cpu"]
-    build_cmd = ["cmake", "--build", str(build_dir), "--target", *targets]
+    build_cmd = [cmake_bin, "--build", str(build_dir), "--target", *targets]
     subprocess.run(build_cmd, cwd=str(ROOT), check=True, env=env)
     for target in ["strata-gguf", "strata-plan", "strata-dequant"]:
         tpath = build_dir / target
@@ -2023,10 +2064,10 @@ def build_engine_macos(vision="none") -> Path:
         say("  Building vision encoder for macOS ...")
         vbuild = ROOT / "build-vision"
         llama_dir = build_dir / "_deps" / "strata_llamacpp-src"
-        cmake_vcmd = ["cmake", "-S", str(ROOT / "tools" / "vision"), "-B", str(vbuild),
+        cmake_vcmd = [cmake_bin, "-S", str(ROOT / "tools" / "vision"), "-B", str(vbuild),
                       "-DCMAKE_BUILD_TYPE=Release", f"-DLLAMA_DIR={llama_dir}"]
         subprocess.run(cmake_vcmd, cwd=str(ROOT), check=True, env=env)
-        subprocess.run(["cmake", "--build", str(vbuild), "--target", "strata-vision"], cwd=str(ROOT), check=True, env=env)
+        subprocess.run([cmake_bin, "--build", str(vbuild), "--target", "strata-vision"], cwd=str(ROOT), check=True, env=env)
         if (vbuild / "bin" / VEXE).exists():
             shutil.copy2(vbuild / "bin" / VEXE, eng / VEXE)
     stamp.write_text(json.dumps({
