@@ -139,7 +139,7 @@ def run_serve(cfg: dict):
         "-ngl", "999",  # Full offload to Apple Silicon Metal GPU
         "--port", str(port),
         "--host", "127.0.0.1",
-        "--slots", "1",
+        "--parallel", "1",
         "--threads", str(threads),
     ]
 
