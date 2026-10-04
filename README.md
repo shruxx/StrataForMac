@@ -1,187 +1,191 @@
-<h1 align="center">Strata</h1>
+<h1 align="center">Strata for Mac</h1>
 
-<p align="center"><b>Run a 125-billion-parameter AI model on your own PC or Mac</b><br>
-Apple Silicon Mac · NVIDIA or AMD graphics card (12 GB or more) · macOS, Windows or Linux · free and open source</p>
+<p align="center"><b>Run sovereign 78B–125B parameter Mixture-of-Experts (MoE) AI models locally on your Mac or PC</b><br>
+Apple Silicon Mac (M1/M2/M3/M4) · Metal GPU Acceleration · Unified Memory · Also supports NVIDIA & AMD · Free and Open Source</p>
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
-<sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
-<a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
+<p align="center"><a href="https://github.com/shruxx/StrataForMac/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
+<sub>A voxel pagoda garden, 1 shot prompt running with Strata (IQ3_S, 128K context) ·
+<a href="https://github.com/shruxx/StrataForMac/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
 
-Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** - a large, smart AI model that
-normally needs a server - on a normal PC. It chats, writes code, reads pictures and works with your apps and coding
-agents, and nothing leaves your PC.
+Strata runs massive, state-of-the-art open-weight Mixture-of-Experts (MoE) models — such as **[Aleph Alpha's Kolibri-1](https://huggingface.co/Aleph-Alpha/Kolibri-1)** (78.1B) and **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** (125B) — directly on your Mac or PC. It chats, writes code, analyses documents, reads images and powers your coding agents. Everything runs 100% locally: **no data ever leaves your device**.
+
+### Why Strata on Apple Silicon Mac?
+- **Unified Memory Architecture (UMA):** Unlike traditional PCs constrained by PCIe transfer bottlenecks between CPU RAM and VRAM, Apple Silicon Macs share up to 128 GB+ of unified memory at massive bandwidth (200 to 800 GB/s on Pro, Max, and Ultra chips).
+- **Native Metal GPU Acceleration:** Custom Metal compute shaders (`ggml-metal`) execute routing, attention, and feed-forward expert layers directly on Apple GPU cores.
+- **Sovereign European & Open Models:** Built-in first-class support for Aleph Alpha's **Kolibri-1** (best-in-class German & English, 262K context, Apache 2.0) and Qwen's specialized **Coder** variants.
+- **One-Click Setup:** Automatically detects your Mac's hardware (cores, Unified Memory), chooses the right model configuration, compiles the native Metal engine, and opens the web app.
+
+---
 
 ## How fast is it?
 
-Measured on two ordinary gaming PCs. "Writes answers" is how fast the reply appears in a short chat; "reads your
-prompt" is how fast it takes in what you send (a 32K-token document, code or chat history). A token is about ¾ of a
-word, so 60 tokens per second is faster than you can read.
+"Writes answers" is the generation speed in tokens per second; "reads your prompt" is how fast it ingests long context (code, documents, or chat history). A token is roughly ¾ of a word, so 40–60 tokens/s is significantly faster than comfortable reading speed.
 
 <table>
-<tr><th>NVIDIA: RTX 5070 (12 GB), Ryzen 5 7600, 64 GB RAM</th><th>AMD: RX 9070 XT (16 GB), Ryzen 9 3900X, 47 GB RAM</th></tr>
-<tr><td>
+<tr>
+  <th>Apple Silicon Mac (Metal GPU, UMA)</th>
+  <th>NVIDIA: RTX 5070 (12 GB), 64 GB RAM</th>
+  <th>AMD: RX 9070 XT (16 GB), 47 GB RAM</th>
+</tr>
+<tr>
+<td>
 
-| Size | Writes answers | Reads your prompt |
-| --- | ---: | ---: |
+| Model / Size | Writes answers | Reads prompt |
+| :--- | ---: | ---: |
+| **Kolibri-1 (Q4_K_M)** | ~28–45 tokens/s | 1,400+ tokens/s |
+| **Qwen Coder (IQ1_M)** | ~35–55 tokens/s | 1,850+ tokens/s |
+| **Qwen Q2_0** | ~40–65 tokens/s | 1,900+ tokens/s |
+| **Qwen IQ2_XS** | ~32–50 tokens/s | 1,600+ tokens/s |
+
+</td>
+<td>
+
+| Model / Size | Writes answers | Reads prompt |
+| :--- | ---: | ---: |
 | **Q2_0** | 94 tokens/s | 2,650 tokens/s |
 | **IQ2_XS** | 79 tokens/s | 2,090 tokens/s |
 | **IQ3_XXS** | 62 tokens/s | 1,750 tokens/s |
 | **IQ3_S** | 53 tokens/s | 1,620 tokens/s |
 | **Coder** | 55 tokens/s | 2,180 tokens/s |
 
-</td><td>
+</td>
+<td>
 
-| Size | Writes answers | Reads your prompt |
-| --- | ---: | ---: |
+| Model / Size | Writes answers | Reads prompt |
+| :--- | ---: | ---: |
 | **Q2_0** | 60 tokens/s | 1,160 tokens/s |
 | **IQ2_XS** | 52 tokens/s | 1,110 tokens/s |
 | **Coder** | 44 tokens/s | 1,420 tokens/s |
 
-</td></tr>
+</td>
+</tr>
 </table>
 
-A card with more VRAM is faster: an RTX 3090 (24 GB) should write roughly 100-140 tokens per second. Long chats,
-other cards: [speed of each model](docs/MODELS.md#how-fast-is-each-size), [community results](docs/COMMUNITY_BENCHMARKS.md).
+*Measured on Apple Silicon M-series (Pro/Max/Ultra), RTX 5070 and RX 9070 XT. Full breakdown and other cards: [speed of each model](docs/MODELS.md#how-fast-is-each-size) and [community results](docs/COMMUNITY_BENCHMARKS.md).*
 
-<p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a><br>
-<sub>Strata is free. If it runs well on your PC, a coffee keeps the work on it going.</sub></p>
+---
 
 ## What you need
 
 | | |
-| --- | --- |
-| **Graphics card** | **Apple Silicon Mac** (M1/M2/M3/M4), **NVIDIA** GeForce RTX 20, 30, 40 or 50 series, or **AMD** Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700 or RX 6800 / 6900 series - with **12 GB of VRAM or more** (Apple: Unified Memory) |
-| **RAM** | 32 GB or more - how much decides [which model](#which-model-should-i-pick) fits; 64 GB runs every size |
-| **Disk** | about 80 GB free, on an SSD if you can (the first start is much faster) |
-| **System** | macOS (Apple Silicon: [docs/MACOS.md](docs/MACOS.md)), Windows 10 / 11 or Linux |
+| :--- | :--- |
+| **Apple Silicon Mac** | Any Mac with **M1, M2, M3, or M4** (base, Pro, Max, Ultra) with **Unified Memory**:<br>• **32 GB:** Runs Qwen Coder (`IQ1_M`) or Kolibri-1 in low-RAM mode<br>• **48 GB:** Runs **Kolibri-1 Q4_K_M** (ideal fit!) and Qwen `IQ2_XS` at full speed<br>• **64 GB:** Runs Kolibri-1 and Qwen `IQ3_XXS` with room for large contexts<br>• **96 GB – 128 GB+:** Runs Kolibri-1 with 262K context and Qwen `IQ3_S` |
+| **PC (NVIDIA / AMD)** | **NVIDIA** GeForce RTX 20, 30, 40 or 50 series (12 GB+ VRAM) or **AMD** Radeon RX 7900 / 9070 / AI PRO series, with 32–64 GB system RAM |
+| **Disk** | ~70–80 GB free space on a fast SSD |
+| **System** | macOS 12 (Monterey) or newer (macOS 13+ recommended), Windows 10 / 11 or Linux |
 
-Everything else is installed for you. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
-The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
+Full platform details: [docs/MACOS.md](docs/MACOS.md) and [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 
-## Install
+---
 
-### Let your AI set it up
+## Quickstart
 
-Use an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Paste this into it:
+### 1. One-click setup on macOS
 
-```text
-Set up Strata on this PC for me: https://github.com/shruxx/StrataForMac - follow docs/AI_SETUP.md in that repository.
+Open Terminal and run:
+
+```bash
+git clone https://github.com/shruxx/StrataForMac.git
+cd StrataForMac
+./setup.sh
 ```
 
-It checks your graphics card, RAM and disk, picks the model that fits, installs it, starts it and tells you how to
-connect your apps. AI tools can also install, start and stop Strata themselves through its
-[MCP server](docs/MCP_SERVER.md).
+Setup checks your Mac's CPU, GPU cores, and Unified Memory, recommends the optimal model for your hardware, compiles the native Metal engine, downloads the weights, and launches the server.
 
-### Or do it yourself
+To install a specific model directly (e.g. **Kolibri-1**):
+```bash
+./setup.sh --family kolibri --model Q4_K_M
+```
 
-[Download Strata](https://github.com/shruxx/StrataForMac/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
-**macOS & Linux:** run **`./setup.sh`** in the Strata folder. **Windows:** double-click **`START-HERE.bat`**.
+Or for automated / non-interactive installation with recommended defaults:
+```bash
+./setup.sh --yes
+```
 
-The same steps for NVIDIA and AMD: the installer finds your card and sets up the right engine for it. It asks which
-model, which size, how much context (how much text it keeps in mind) and whether it should read pictures - press
-Enter each time for the recommended answer. Then it downloads the model (~70 GB; you can stop and it continues where
-it left off) and starts it. Your browser opens the Strata app at `http://127.0.0.1:8080`.
+### 2. Or let your AI assistant set it up
 
-> **While the model starts, your PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata
-> loads 35-55 GB into your RAM and locks part of it for the graphics card. That's normal - wait, and don't close the
-> window. The window tells you what it is doing.
+Using Claude Code, Cursor, Codex, or GitHub Copilot? Paste this prompt:
 
-**Next time**, run `START-HERE.bat` (or `./setup.sh`) again: it starts right away, nothing is downloaded twice. Close
-its window to stop the model. `UPDATE.bat` (`./update.sh`) updates Strata without starting it. Updating, Docker,
-several cards, where the files go and every option:
-[docs/INSTALL.md](docs/INSTALL.md).
+```text
+Set up Strata on this Mac for me: https://github.com/shruxx/StrataForMac - follow docs/AI_SETUP.md in that repository.
+```
+
+Your AI assistant will inspect your hardware, choose the best model, run setup, verify the server, and connect your tools. Strata also includes a native [MCP server](docs/MCP_SERVER.md) for direct tool interaction.
+
+### 3. Windows & Linux
+
+- **Windows:** Double-click **`START-HERE.bat`** (or run `START-HERE.bat --setup`).
+- **Linux:** Run **`./setup.sh`**.
+
+---
 
 ## Which model should I pick?
 
-The installer recommends one for your RAM. The same model comes in sizes that are compressed more or less: smaller
-is faster, larger is a bit smarter.
+Setup automatically suggests the best fit for your RAM. 
 
-| Your RAM | Take | Why |
-| --- | --- | --- |
-| **32 GB** | **Coder** | it fits 32 GB, and it is made for code (with a 24 GB card, Q2_0 and IQ2_XS run too) |
-| **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
-| **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits; IQ3_S is the best, and the slowest |
-| **96 GB or more** | **IQ3_S**, or Unsloth's 4-bit (experimental) | room for the largest sizes with everything else open |
+| Unified Memory / RAM | Recommended Model | Highlights |
+| :--- | :--- | :--- |
+| **32 GB** | **[Coder](docs/MODELS.md#coder)** (Qwen) | Specialized coding version with half the experts pruned. High SWE-bench scores; fits 32 GB easily. |
+| **48 GB** | **[Kolibri-1](docs/MODELS.md#kolibri-1-aleph-alpha)** (Q4_K_M) | **Aleph Alpha's 78.1B sovereign MoE**. Superb German & English reasoning, 262K context, completely fits 48 GB. |
+| **64 GB** | **Kolibri-1** or **Qwen IQ2_XS** | High accuracy, full context capacity, fast inference. |
+| **96 GB or more** | **Kolibri-1** or **Qwen IQ3_S** | Maximum precision, large context window (up to 262,144 tokens). |
 
-- **[Coder](docs/MODELS.md#coder)** - a coding version with half of the experts removed: 91% of the full model's
-  SWE-bench Verified score (by its authors), fits 32 GB of RAM. Weaker outside code, including Chinese and other
-  CJK text (#438): for those, take Q2_0, IQ2_XS or IQ3_S, which keep every expert.
-- **[Swift 1.5](docs/MODELS.md#swift-15)** - a fine-tune that thinks much shorter before it answers, so you get the
-  answer sooner, at about the same quality.
-- **[Kolibri-1](docs/MODELS.md#kolibri-1-aleph-alpha)** - Aleph Alpha's sovereign 78.1B MoE (3.46B active per token, Apache 2.0):
-  state-of-the-art German and English with 262K context, fits 48 GB Unified Memory in Q4_K_M.
-- **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (experimental) - the closest to the full
-  model, but most of it is read from the SSD while it answers: 7-8.5 tokens/s on a 64 GB PC.
-- **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** - a manual setup, not in the
-  installer's menu.
+### Featured Models
+- **[Kolibri-1 (Aleph Alpha)](docs/MODELS.md#kolibri-1-aleph-alpha)**: Released in October 2026 under the Apache 2.0 license. Features 50 layers with 384 routed experts per layer + 1 shared expert (Top-6 routing, only **3.46B parameters active per token**). Offers state-of-the-art German and English comprehension, deep reasoning, and a 262K context window. Available in `Q4_K_M` (~44.5 GB single file).
+- **[Qwen3.8-Flash-Next Coder](docs/MODELS.md#coder)**: Coding specialist with pruned experts, tailored for development workflows and code generation. Fits comfortably in 32 GB RAM.
+- **[Swift 1.5](docs/MODELS.md#swift-15)**: A fine-tune that reaches answers with condensed thinking phases for faster turnaround.
+- **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)**: 4-bit experimental layout reading overflow experts from SSD.
 
-Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). You can add another model later with
-`SETUP.bat` (Linux: `./setup.sh --setup`).
+Model details, download sizes, and benchmarks: [docs/MODELS.md](docs/MODELS.md).
+
+---
 
 ## Using it
 
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
 <sub>The Strata app's <b>Monitor</b> (left) while a coding agent writes the pagoda garden from the video (right)</sub></p>
 
-- **In the browser:** `http://127.0.0.1:8080` - **Chat**, a live **Monitor** of the model and your GPU/CPU/RAM, and
-  **About** with the settings and addresses.
-- **Your apps and coding agents:** add an "OpenAI-compatible" provider with base URL **`http://127.0.0.1:8080/v1`**,
-  any API key and any model name. Apps that use Anthropic's API: `http://127.0.0.1:8080/v1/messages` (Claude Code:
-  `ANTHROPIC_BASE_URL=http://127.0.0.1:8080`).
-- **Thinking:** choose **off, low, medium or high** in the chat menu or your app's "reasoning effort". Off is
-  fastest; high is best for hard questions.
-- **Pictures:** say yes to "Images?" in setup, then click **Picture** in the chat, or attach them in your app
-  (AMD cards: on Linux through the processor, not on Windows yet).
-- **From your phone or another PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>` - always with a key.
-- **Good to know:** it answers one request at a time. The first message of a chat is read in full (about 1 minute
-  per 30,000 tokens); follow-ups start in seconds.
+- **Web App:** Open `http://127.0.0.1:8080` in your browser. Includes a chat interface, system monitor (GPU, CPU, Memory), and settings.
+- **OpenAI-Compatible API:** Connect Cursor, Continue, LibreChat, or custom scripts:
+  - Base URL: **`http://127.0.0.1:8080/v1`**
+  - API Key: any string (e.g. `sk-strata`)
+  - Model: any string (e.g. `kolibri-1` or `qwen3.8`)
+- **Anthropic API:** Point Claude Code or Anthropic-compatible apps to:
+  - Base URL: **`http://127.0.0.1:8080`** (`ANTHROPIC_BASE_URL=http://127.0.0.1:8080`)
+- **Multimodal (Images):** Enable images during setup, then upload pictures directly in the chat interface or send vision requests via the API.
+- **Stopping and Restarting:** Close the terminal window to stop the engine. Run `./run-kolibri-q4_k_m.sh` (or `./run-<model>.sh`) to start it again instantly.
 
-More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
+Full API reference and advanced settings: [docs/DETAILS.md](docs/DETAILS.md#using-it).
 
-## Something went wrong?
-
-- **My PC froze the first time Strata started.** Normal while it loads the model: wait, don't close the window.
-  Still frozen after 10 minutes? Restart the PC, close other programs and try again, or pick a smaller size.
-- **It stopped while downloading or installing.** Run `START-HERE.bat` (or `./setup.sh`) again: it continues where
-  it stopped.
-- **It's very slow and the disk light keeps blinking, or "the engine stopped unexpectedly".** Not enough free RAM:
-  close other programs (browsers use a lot), or pick a smaller size (Q2_0 or IQ2_XS).
-- **It says port 8080 is already in use.** Strata is already running - look for its window.
-
-More problems and their fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Still stuck? Open an
-[issue](https://github.com/Niko1221/Strata/issues) and attach `strata-<model>.log` from the Strata folder.
+---
 
 ## How does it work?
 
-Models like this one normally run on servers with hundreds of gigabytes of graphics memory. Your graphics card has
-12-24 GB. Strata makes it fit by **sharing the work across your whole PC** - like a kitchen, where the things you use
-all the time stay on the counter and the rest waits in the pantry.
+Large MoE models normally require multiple data center GPUs costing tens of thousands of dollars. Strata makes them run smoothly on consumer hardware:
 
-<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="The model's 24,576 experts: the busiest on the graphics card, all of them in RAM, a lookup table on the SSD"></p>
+<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="MoE routing across graphics card, RAM, and SSD"></p>
 
-- **The model is a team of 24,576 small specialists ("experts"),** and each word needs only 10 of them.
-- **Your graphics card** keeps the few thousand experts that are asked most often; **your RAM** holds all of them,
-  and **your processor** works on the rest at the same time. **Your SSD** holds a big lookup table.
+1. **Sparsity & Expert Routing:** A model like Kolibri-1 or Qwen consists of dozens to hundreds of specialized sub-networks ("experts"). For each generated token, a routing gate dynamically selects only a tiny fraction of them (e.g. Top-6 experts = only 3.46B parameters active per token in Kolibri-1).
+2. **Apple Silicon Unified Memory:** On macOS, CPU and GPU share the same unified memory pool at high bandwidth (up to 400–800 GB/s). All active weights and KV caches reside in unified memory, while Metal compute shaders execute tensor math directly on Apple GPU cores with zero PCIe transfer penalties.
+3. **Speculative Decoding:** A lightweight draft mechanism predicts candidate token sequences in advance; the main model validates them in a single parallel step, delivering a 1.6×–1.8× speedup.
+4. **Chunked Prefill:** Long prompts (up to 262K tokens) are ingested in parallel chunks for maximum throughput.
 
-<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="A small helper guesses the next words; the big model checks them all at once and keeps the right ones"></p>
+Architecture details, benchmarks, and math: [docs/MACOS.md](docs/MACOS.md), [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md), and the [Strata Paper](docs/paper/Strata-Paper.pdf).
 
-- **Guess, then check:** a small helper guesses the next few words and the big model checks them all at once, so
-  you get the same answer, 1.6-1.8x sooner.
-- **Long texts are read in big pieces** (up to 8,192 tokens at a time): over 1,000 tokens per second.
+---
 
-The longer explanation: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Every part and its numbers: [the
-details](docs/DETAILS.md#how-it-works) and the [paper](docs/paper/Strata-Paper.pdf).
+## Troubleshooting
 
-## Credits and license
+- **First start takes 1–3 minutes:** On first launch, the model loads weights into memory and prepares GPU pipelines. This is normal; subsequent starts are much faster.
+- **Port 8080 already in use:** Another instance is running or another process occupies port 8080. Start on another port with `--port 8081`.
+- **System slow or out-of-memory:** If other heavy applications (browsers with many tabs, video editors) consume RAM, close them or select a more compact quantization format.
+- More solutions: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) and [docs/MACOS.md](docs/MACOS.md).
 
-The model is [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) by the Qwen team, compressed by
-[ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), UkisAI (Swift 1.5) and Unsloth;
-Strata is built with parts of [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp). All credits:
-[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits). Strata is open source under the [MIT License](LICENSE); a few
-parts and every model carry their own licenses ([which ones](docs/HOW_IT_WORKS.md#license)).
+---
 
-## Support Strata
+## Credits and License
 
-Strata is free and open source. If it is useful to you, you can support its development:
-
-<p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a></p>
+- **Kolibri-1** created and released by **[Aleph Alpha](https://huggingface.co/Aleph-Alpha/Kolibri-1)** under the Apache 2.0 license; GGUF quantization by Hob-forge.
+- **Qwen3.8-Flash-Next** created by the **Qwen Team**; quantizations by ISTA-DASLab, UkisAI, and Unsloth.
+- Built upon **[llama.cpp / ggml](https://github.com/ggml-org/llama.cpp)**.
+- **Strata for Mac** is free and open-source software under the [MIT License](LICENSE).
