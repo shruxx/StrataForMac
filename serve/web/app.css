@@ -151,6 +151,17 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-toast { animation: toast-in 180ms var(--st-ease); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
+/* ---------------------------------------------------------------- model switch (header) */
+.model-switch { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px 0 10px;
+  border: 1px solid var(--st-line); border-radius: var(--st-r-pill); background: var(--st-surface-2);
+  color: var(--st-ink-soft); max-width: 260px; }
+.model-switch[hidden] { display: none; }
+.model-switch select { min-width: 0; max-width: 220px; height: 28px; border: 0; background: transparent;
+  color: var(--st-ink); font: 500 var(--st-fs-sm)/1 var(--st-font); cursor: pointer; text-overflow: ellipsis; }
+.model-switch select:disabled { cursor: progress; color: var(--st-ink-muted); }
+.model-switch:focus-within { outline: 2px solid var(--st-focus); outline-offset: 2px; }
+.model-switch select:focus-visible { outline: none; }
+
 /* ---------------------------------------------------------------- narrow screens */
 @media (max-width: 1000px) {
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -162,6 +173,8 @@ main { flex: 1; min-height: 0; display: flex; }
   .st-tab { padding: 0 10px; }
   .st-tab .st-icon { display: none; }
   #pill-text { display: none; }
+  .model-switch { max-width: 140px; }
+  .model-switch .st-icon { display: none; }
   .chat { padding: var(--st-s-5) var(--st-s-4); }
   .composer-wrap { padding: 0 var(--st-s-3) var(--st-s-3); }
   .monitor, .about { padding: var(--st-s-4); }

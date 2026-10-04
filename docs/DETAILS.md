@@ -308,6 +308,10 @@ download continues where it stopped) and **starts the model**: your browser open
 app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
+  With more than one model set up on this computer (one `strata-<model>.json` each), a list in the header switches
+  between them: the current model stops first (its memory is free for the next), then the server starts again with
+  the other one on the same address, and the page reloads when it answers. A model that does not start brings the
+  one before back.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
   VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
 - **About:** the model and engine settings, and the addresses to connect other apps.
@@ -931,6 +935,13 @@ remains the default. This option is text-only: a vision configuration with lazy 
 `application/json`, and no foreign browser Origin. They return **409** while a request is active or queued,
 and **404** for an unknown model. Existing `/load` and `/unload` behavior is preserved. `/api/health` aliases
 `/health`; `/v1/status` exposes `loaded` and `auto_load`. The unloaded model remains discoverable.
+
+`GET /models-configured` lists the models set up next to the config (`strata-*.json`) and the current one;
+`POST /switch-model` with `{"id": "strata-<model>"}` restarts the server with that config (**202**). It needs the API
+key, `application/json` and Strata's own page (or a `trusted_origins` origin), takes only a listed name, and returns
+**409** while a request is active or queued. The server restarts in the same process (on Windows, a new one the old
+one waits on), so the start window and `setup.py` keep running; `--switched-from` (set by the switch) brings the
+previous model back when the new one fails before it answers.
 
 Unloading and shutdown close the native engine's stdin after sending `QUIT`, allowing Windows' detached
 stdin reader to see EOF. Cleanup waits for process exit before releasing handles; if forced shutdown still

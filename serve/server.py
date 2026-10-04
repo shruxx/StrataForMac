@@ -952,6 +952,8 @@ class Service:
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
+        self.config_path = None                       # the config this server runs (the web app's model switch)
+        self.switch_to = None                         # a config to restart with (POST /switch-model), set once
         self.fifo = threading.Lock()
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -2157,6 +2159,12 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
                 return
+            if path == "/models-configured":
+                # the models set up on this computer, for the web app's model switch
+                if self._authorized():
+                    current = Path(svc.config_path).stem if svc.config_path else None
+                    self._json(200, {"current": current, "models": configured_models(svc.config_path)})
+                return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
@@ -2225,6 +2233,9 @@ def make_handler(svc: Service):
                 return
             if path == "/settings":
                 self._settings()
+                return
+            if path == "/switch-model":
+                self._switch_model()
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
@@ -2334,6 +2345,37 @@ def make_handler(svc: Service):
             if version:
                 props["build_info"] = "Strata " + str(version)
             self._json(200, props)
+
+        def _switch_model(self):
+            """Restart this server with another model set up next to its config: answered at once, then the engine
+            ends (its memory is free before the next one loads) and the server starts again with that config on the
+            same port.  The web app waits for /health to name the new model."""
+            if not self._own_page("the model can be switched"):
+                return
+            try:
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            except ValueError:
+                req = None
+            want = req.get("id") if isinstance(req, dict) else None
+            models = {m["id"]: m for m in configured_models(svc.config_path)}
+            if want not in models:
+                self._json(404, {"error": {"message": "no model set up with that name"}})
+                return
+            if Path(svc.config_path).stem == want:
+                self._json(200, {"status": "current", "model": models[want]["name"]})
+                return
+            if not svc.fifo.acquire(blocking=False):        # held until the restart: no request starts meanwhile
+                self._json(409, {"error": {"message": "a request is running or queued: switch when it is done"}})
+                return
+            with svc.status_lock:
+                busy = svc.status.get("busy") or svc.status.get("queued")
+            if busy or svc.switch_to:
+                svc.fifo.release()
+                self._json(409, {"error": {"message": "a request is running or queued: switch when it is done"}})
+                return
+            svc.switch_to = str(Path(svc.config_path).resolve().parent / f"{want}.json")
+            print(f"[strata] switching to {models[want]['name']} (from the web app) ...", flush=True)
+            self._json(202, {"status": "switching", "model": models[want]["name"]})
 
         def _own_page(self, what) -> bool:
             """Only JSON (a form or a "simple" cross-site request can't send it without a CORS preflight, which this
@@ -2699,6 +2741,54 @@ def origin_allowed(origin: str, host, names, origins=()) -> bool:
     return bool(name) and (name in LOOPBACK_NAMES or name.endswith(".localhost") or _name_in(name, names))
 
 
+def configured_models(config_path) -> list[dict]:
+    """The models set up next to this config (setup.py writes strata-<model>.json for each): their config's name
+    (the file name without .json) and model name, for the web app's model switch.  Files that are not an engine
+    config (the .shared-settings.json beside each) are left out."""
+    if not config_path:
+        return []
+    out = []
+    for f in sorted(Path(config_path).resolve().parent.glob("strata-*.json")):
+        if f.name.endswith(".shared-settings.json"):
+            continue
+        try:
+            cfg = json.loads(f.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(cfg, dict) and cfg.get("exe") and isinstance(cfg.get("args"), list):
+            out.append({"id": f.stem, "name": str(cfg.get("model_name") or f.stem[len("strata-"):])})
+    return out
+
+
+def relaunch_argv(argv: list[str], config: str, switched_from: str | None = None) -> list[str]:
+    """This server's command line with another --config (and without --open: the page is open already); with
+    `switched_from`, the config to go back to when that model does not start."""
+    out, i = [], 0
+    while i < len(argv):
+        x = argv[i]
+        if x in ("--config", "--switched-from") and i + 1 < len(argv):
+            i += 2
+            continue
+        if x.startswith(("--config=", "--switched-from=")) or x == "--open":
+            i += 1
+            continue
+        out.append(x)
+        i += 1
+    return out + ["--config", config] + (["--switched-from", switched_from] if switched_from else [])
+
+
+def relaunch(config: str, switched_from: str | None = None) -> int:
+    """Start this server again with another config: the same process (exec), so the start window and setup.py keep
+    waiting on it; on Windows, which has no exec, a new one this one waits on."""
+    argv = [sys.executable, os.path.abspath(sys.argv[0]), *relaunch_argv(sys.argv[1:], config, switched_from)]
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if os.name == "nt":
+        return subprocess.call(argv)
+    os.execv(sys.executable, argv)
+    return 0
+
+
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
@@ -2827,7 +2917,36 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     return out
 
 
+SERVING = False                                         # main() got as far as answering requests
+
+
 def main() -> int:
+    """The server; after a model switch from the web app (--switched-from), a start that fails before the server
+    answers goes back to the model that ran before instead of leaving nothing running."""
+    try:
+        return serve_main()
+    except KeyboardInterrupt:
+        raise
+    except BaseException as e:
+        back = relaunch_argv_value(sys.argv[1:], "--switched-from")
+        if SERVING or not back or (isinstance(e, SystemExit) and e.code in (0, None)):
+            raise
+        why = str(e).removeprefix("[strata] ") or type(e).__name__
+        print(f"[strata] {why}\n[strata] this model did not start - back to the one before", flush=True)
+        return relaunch(back)
+
+
+def relaunch_argv_value(argv: list[str], flag: str) -> str | None:
+    for i, x in enumerate(argv):
+        if x == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if x.startswith(flag + "="):
+            return x[len(flag) + 1:]
+    return None
+
+
+def serve_main() -> int:
+    global SERVING
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
@@ -2863,6 +2982,7 @@ def main() -> int:
     ap.add_argument("--min-free-vram-mib", type=int, default=None,
                     help="load an unloaded model only when this much VRAM is free, else answer 503 (also "
                          "\"min_free_vram_mib\" in the config; default: always load)")
+    ap.add_argument("--switched-from", help=argparse.SUPPRESS)   # the web app's model switch: the config to go
     ap.add_argument("--before-load", help="a command run before the model is loaded again (e.g. to unload another "
                                           "server's model; also \"before_load\" in the config, a string or a list)")
     a = ap.parse_args()
@@ -2922,7 +3042,16 @@ def main() -> int:
             silence = engine_silence_s(cfg)             # #481: checked before the (minutes-long) start
         except ValueError as e:
             raise SystemExit(f"[strata] config {e}")
-        engine = StrataEngine(exe, engine_args(cfg), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy)
+        try:
+            engine = StrataEngine(exe, engine_args(cfg), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy)
+        except RuntimeError as e:
+            if not a.switched_from:
+                raise
+            # switched to from the web app and it did not start: back to the model that ran before
+            print(f"[strata] {e}\n[strata] this model did not start - back to the one before", flush=True)
+            if vision:
+                vision.close()
+            return relaunch(a.switched_from)
         engine.silence_s = silence                      # an attribute of its own: restart() keeps it
         warn_tight_ram(engine.info.get("arena_mib"))
         note = desktop_vram_note(cfg.get("backend"), engine.info.get("vram_free_mib"), engine.spawn[1],
@@ -2989,6 +3118,7 @@ def main() -> int:
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
+    svc.config_path = os.path.abspath(a.config) if a.config else None
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
@@ -3006,6 +3136,7 @@ def main() -> int:
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
+    SERVING = True
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
@@ -3039,21 +3170,27 @@ def main() -> int:
         signal.signal(signal.SIGTERM, on_sigterm)
     except (ValueError, OSError, AttributeError):         # not the main thread
         pass
-    try:
-        while True:
-            time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
-    except KeyboardInterrupt:
-        print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
-        closers = [httpd.shutdown, getattr(engine, "close", None), vision.close if vision else None,
-                   hub.close if hub is not None else None]
+    def stop():
+        closers = [httpd.shutdown, httpd.server_close, getattr(engine, "close", None),
+                   vision.close if vision else None, hub.close if hub is not None else None]
         for close in filter(None, closers):
             try:
                 close()
             except KeyboardInterrupt:                   # a second Ctrl+C: don't wait for the engine to free its memory
                 if getattr(engine, "proc", None):
                     engine.proc.kill()
+    try:
+        while not svc.switch_to:
+            time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
+    except KeyboardInterrupt:
+        print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
+        stop()
         print("[strata] stopped", flush=True)
-    return 0
+        return 0
+    time.sleep(0.5)                                     # the 202 reaches the page before the server goes
+    print("[strata] stopping this model ...", flush=True)
+    stop()
+    return relaunch(svc.switch_to, switched_from=svc.config_path)
 
 
 if __name__ == "__main__":

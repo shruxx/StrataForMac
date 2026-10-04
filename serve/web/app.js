@@ -107,6 +107,74 @@ async function loadHealth() {
   }
 }
 
+// ------------------------------------------------------------------ model switch (header)
+// The models set up on this computer (setup.py's strata-<model>.json files).  Switching restarts the server with
+// the other one: the current model stops first, so its memory is free for the next.
+let models = {current: null, models: []}, switching = null;
+async function loadModels() {
+  try {
+    const r = await fetch("models-configured", {headers: headers()});
+    if (!r.ok) return;
+    models = await r.json();
+  } catch (e) { return; }
+  const sel = $("model-select");
+  sel.innerHTML = "";
+  for (const m of models.models) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.name;
+    sel.appendChild(o);
+  }
+  sel.value = models.current || "";
+  $("model-switch").hidden = models.models.length < 2;
+}
+$("model-select").onchange = () => {
+  const sel = $("model-select"), id = sel.value;
+  const target = models.models.find((m) => m.id === id);
+  sel.value = models.current || "";              // nothing changes until the switch is confirmed
+  if (!target || id === models.current) return;
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  toast("info", `Switch to ${target.name}?`, "The current model stops; loading the other one takes a minute or two.",
+        8000, {label: "Switch", run: () => switchModel(target)});
+};
+async function switchModel(target) {
+  let r;
+  try {
+    r = await fetch("switch-model", {method: "POST", headers: headers(true), body: JSON.stringify({id: target.id})});
+  } catch (e) { toast("error", "Switch failed", "The server is not reachable."); return; }
+  const j = await r.json().catch(() => ({}));
+  if (r.status !== 202) {
+    if (r.ok) return;                            // already this model
+    toast("error", "Switch failed", (j.error && j.error.message) || `HTTP ${r.status}`, 6000);
+    return;
+  }
+  switching = target;
+  $("model-select").disabled = true;
+  setPill("reading", `Loading ${target.name}…`);
+  const t0 = Date.now(), before = health.model;
+  let gone = false;
+  const wait = async () => {                     // the server is gone for a moment, then loads the model
+    try {
+      const h = await (await fetch("health", {cache: "no-store"})).json();
+      if (h.model === target.name) { location.reload(); return; }
+      if (gone && h.model === before) {          // it did not start: the server went back to the model before
+        switching = null;
+        $("model-select").disabled = false;
+        toast("error", `${target.name} did not start`, `Back to ${before}. The Strata window (or the model's log) says why.`, 12000);
+        return;
+      }
+    } catch (e) { gone = true; }
+    if (Date.now() - t0 > 15 * 60 * 1000) {
+      switching = null;
+      $("model-select").disabled = false;
+      toast("error", "The model did not start", "Look at the Strata window (or its log) for the reason.", 10000);
+      return;
+    }
+    setTimeout(wait, 2000);
+  };
+  setTimeout(wait, 2000);
+}
+
 // ------------------------------------------------------------------ Monitor
 const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
@@ -152,6 +220,7 @@ function setMetric(key, value, unit, sub) {
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
 async function poll() {
+  if (switching) { setTimeout(poll, 1000); return; }   // the server restarts with the other model
   try {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
     if (r.status === 401) {
@@ -975,6 +1044,7 @@ setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
+loadModels();
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
 poll();

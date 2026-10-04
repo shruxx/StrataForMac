@@ -264,6 +264,74 @@ class StatusNeedsTheKey(unittest.TestCase):
             httpd.server_close()
 
 
+class ModelSwitch(unittest.TestCase):
+    """The web app's model switch: the models set up next to the config, and a switch only from Strata's own page,
+    by a listed name, with no request running."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        d = Path(self.dir.name)
+        for stem, name in (("strata-a", "model-a"), ("strata-b", "model-b")):
+            (d / f"{stem}.json").write_text(json.dumps({"exe": "x", "args": [], "model_name": name}))
+        (d / "strata-a.shared-settings.json").write_text("{}")
+        (d / "strata-broken.json").write_text("{")
+        self.config = str(d / "strata-a.json")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_configured_models(self):
+        from serve.server import configured_models
+        self.assertEqual(configured_models(self.config), [{"id": "strata-a", "name": "model-a"},
+                                                          {"id": "strata-b", "name": "model-b"}])
+        self.assertEqual(configured_models(None), [])
+
+    def test_relaunch_argv(self):
+        from serve.server import relaunch_argv
+        argv = ["--engine", "strata", "--config", "/m/strata-a.json", "--port", "8080", "--open",
+                "--switched-from", "/m/strata-x.json"]
+        self.assertEqual(relaunch_argv(argv, "/m/strata-b.json", "/m/strata-a.json"),
+                         ["--engine", "strata", "--port", "8080", "--config", "/m/strata-b.json",
+                          "--switched-from", "/m/strata-a.json"])
+        self.assertEqual(relaunch_argv(["--config=/m/a.json"], "/m/b.json"), ["--config", "/m/b.json"])
+
+    def post(self, base, body, headers=None):
+        req = urllib.request.Request(base + "/switch-model", data=body, method="POST",
+                                     headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read() or b"{}")
+
+    def test_switch(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.config_path = self.config
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            with urllib.request.urlopen(base + "/models-configured", timeout=10) as r:
+                self.assertEqual(json.loads(r.read())["current"], "strata-a")
+            self.assertEqual(self.post(base, b'{"id": "strata-b"}', {"Origin": "http://evil.example"})[0], 403)
+            self.assertEqual(self.post(base, b'{"id": "../strata-b"}')[0], 404)
+            self.assertEqual(self.post(base, b'{"id": "strata-broken"}')[0], 404)
+            self.assertEqual(self.post(base, b'{"id": "strata-a"}'), (200, {"status": "current", "model": "model-a"}))
+            with svc.status_lock:
+                svc.status["busy"] = True
+            self.assertEqual(self.post(base, b'{"id": "strata-b"}')[0], 409)
+            self.assertIsNone(svc.switch_to)
+            with svc.status_lock:
+                svc.status["busy"] = False
+            self.assertEqual(self.post(base, b'{"id": "strata-b"}')[0], 202)
+            self.assertEqual(svc.switch_to, str(Path(self.config).resolve().parent / "strata-b.json"))
+            self.assertEqual(self.post(base, b'{"id": "strata-b"}')[0], 409)      # once
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 class ToolCallTerminators(unittest.TestCase):
     """#210: a value that contains </parameter> or </tool_call> (a file documenting the call format) is kept whole."""
     CONTENT = ("Close each value with </parameter> and the call with </function></tool_call>.\n"
