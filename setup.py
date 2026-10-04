@@ -1045,15 +1045,24 @@ def get_llama_cpp():
     """llama.cpp at the pinned commit (ggml for the build, gguf-py for the tools, mtmd for images), as a zip: no git."""
     llama = ROOT / "third_party" / "llama.cpp"
     if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
-        return llama
+        if not is_mac or (llama / "tools" / "ui" / "CMakeLists.txt").exists():
+            return llama
+        src_ui = ROOT / "build" / "_deps" / "strata_llamacpp-src" / "tools" / "ui"
+        if (src_ui / "CMakeLists.txt").exists():
+            shutil.copytree(src_ui, llama / "tools" / "ui", dirs_exist_ok=True)
+            return llama
     z = ROOT / "third_party" / f"llama.cpp-{LLAMA_CPP_COMMIT[:7]}.zip"
     download(LLAMA_CPP_ZIP, z, "llama.cpp source")
     tmp = ROOT / "third_party" / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     with zipfile.ZipFile(z) as f:
-        # llama.cpp's own web UI (tools/ui) is not used, and its deep paths passed Windows' 260-character limit in a
-        # folder like Downloads\Strata-main\Strata-main (#206)
-        f.extractall(tmp, [m for m in f.namelist() if "/tools/ui/" not in m])
+        # llama.cpp's own web UI (tools/ui) has deep paths that passed Windows' 260-character limit in a
+        # folder like Downloads\Strata-main\Strata-main (#206).
+        # On macOS, tools/ui is required to build llama-server.
+        if WIN:
+            f.extractall(tmp, [m for m in f.namelist() if "/tools/ui/" not in m])
+        else:
+            f.extractall(tmp)
     top = next(tmp.iterdir())
     shutil.rmtree(llama, ignore_errors=True)
     # PR #63: on Windows a rename can fail with PermissionError while an antivirus scanner still holds a file of the
@@ -2079,11 +2088,23 @@ def build_engine_macos(vision="none", llama=None) -> Path:
 
     # Build llama-server and llama-cli with Metal GPU acceleration for macOS
     llama_dir = Path(llama) if llama else (ROOT / "third_party" / "llama.cpp")
-    if not llama_dir.exists():
-        llama_dir = build_dir / "_deps" / "strata_llamacpp-src"
+    if not (llama_dir / "tools" / "ui" / "CMakeLists.txt").exists():
+        src_ui = build_dir / "_deps" / "strata_llamacpp-src" / "tools" / "ui"
+        if (src_ui / "CMakeLists.txt").exists():
+            shutil.copytree(src_ui, llama_dir / "tools" / "ui", dirs_exist_ok=True)
+        elif (build_dir / "_deps" / "strata_llamacpp-src" / "CMakeLists.txt").exists():
+            llama_dir = build_dir / "_deps" / "strata_llamacpp-src"
     if llama_dir.exists():
         say("  Building Metal engine backend (llama-server) ...")
         llama_build = ROOT / "build-llama"
+        cache = llama_build / "CMakeCache.txt"
+        if cache.exists():
+            try:
+                cache_text = cache.read_text(encoding="utf-8", errors="ignore")
+                if str(llama_dir) not in cache_text:
+                    shutil.rmtree(llama_build, ignore_errors=True)
+            except Exception:
+                shutil.rmtree(llama_build, ignore_errors=True)
         cmake_lcmd = [cmake_bin, "-B", str(llama_build), "-S", str(llama_dir),
                       "-DCMAKE_BUILD_TYPE=Release", "-DGGML_METAL=ON", "-DBUILD_SHARED_LIBS=OFF"]
         subprocess.run(cmake_lcmd, cwd=str(ROOT), check=True, env=env)
