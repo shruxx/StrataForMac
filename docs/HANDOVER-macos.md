@@ -6,12 +6,15 @@ before this one ran on a MacBook Pro M1 Max, 32 GB; this one ran on the target M
 ## The Mac this now runs on
 
 MacBook Pro M5 Pro (Mac17,9), 48 GB, 15 CPU cores (5 "Super" = `hw.perflevel0`, 10 "Performance" =
-`hw.perflevel1`), 16 GPU cores, macOS 27.0.1, Metal working set 37.44 GiB, 178 GB free on the SSD.
+`hw.perflevel1`), 16 GPU cores, macOS 27.0.1, Metal working set 37.44 GiB by default, ~137 GB free on the SSD.
 Working folder: `~/Documents/Projekte/StrataFormacOS`, a git clone of `shruxx/StrataForMac` (remote `upstream` =
-`Niko1221/Strata`). Models in `~/Documents/Strata-data` (108 GB): Kolibri-1 Q4_K_M and Qwen3.8-Flash-Next IQ2_XS.
+`Niko1221/Strata`). Models in `~/Documents/Strata-data`: Kolibri-1 Q4_K_M and Qwen3.8-Flash-Next **Q2_0**.
+IQ2_XS was deleted on the user's say-so once Q2_0 had been measured against it (38 GB freed; its shard 2 was a hard
+link shared with Q2_0's, so only its own shard 1 and pack actually went). Q2_0 was verified to still load and answer
+afterwards. Re-downloading IQ2_XS is `./setup.sh --setup --family qwen --model IQ2_XS` and ~10 minutes.
 
-Two leftovers, neither in the way: `~/Documents/StrataForMac-main` is the old ZIP download (1.3 GB, no `.git`) and
-holds nothing this clone needs; `~/Documents/Strata-data/models/Q2_0` is an empty directory.
+One leftover, not in the way: `~/Documents/StrataForMac-main` is the old ZIP download (1.3 GB, no `.git`) and holds
+nothing this clone needs.
 
 ### What had to be repaired first
 
@@ -70,7 +73,39 @@ layers - reads this Mac correctly. `engine/metal-tune.json` holds that result (`
 Next time: measure through the server whenever the answer depends on how much memory is left over, which is every
 model that does not fit the Mac whole. `tools/mac_split_bench.py`'s docstring now says so.
 
-### Qwen3.8-Flash-Next IQ2_XS (36.5 GiB in memory), standalone, ctx 131072
+### Qwen: solved, 10.6 -> 34 tok/s
+
+Full numbers in [2026-10-05-macos-qwen-q2_0](../bench/results/2026-10-05-macos-qwen-q2_0/README.md). The user asked
+for this after the Kolibri work, and it came out well:
+
+| | GPU layers | context | KV | tok/s |
+|---|---:|---:|---|---:|
+| Before: IQ2_XS as the runner planned it | 24 | 131072 | int8 | 10.6 |
+| Q2_0, same settings | 24 | 131072 | int8 | 11.8 |
+| **Now, in `strata-q2_0.json`** | **49** | **65536** | **int8** | **34.0** |
+| with `iogpu.wired_limit_mb=41984` | 49 | 131072 | int8 | 33.8 |
+
+`Q2_0` was downloaded this session (`./setup.sh --setup --family qwen --model Q2_0 --vision no --yes --no-start`);
+only 37.6 GB came down, because setup hard-links shard 2 (the 26.8 GiB table) with IQ2_XS's - the same inode.
+
+**Two hypotheses this session got wrong before the right one.** First the quantization: IQ2_XS's codebook lookups
+against Q2_0's per-bit adds looked like the answer from the Metal kernels, and it is worth ~10%. Then the 26.8 GiB
+`per_layer_token_embd` table: it reads 0.2 - 0.3 MB per token once the model is on the GPU, so it is not the cost
+either. What it actually was: the threshold where llama.cpp **maps** the model file into the Metal buffer instead
+of **copying** the GPU's weights out of it (`metal-split-mmap.patch` does the copying below it). Q2_0 at `-c 32768`:
+44 layers 23.8 tok/s, 32.2 GiB footprint, 31.7 s to load; 47 layers 29.2 tok/s, 0.9 GiB, 11.8 s. Q2_0 is still
+needed, because its 35.0 GiB (against IQ2_XS's 36.5) is what lets all 49 layers on at the stock limit.
+
+So for a model that nearly fits a Mac: **set `STRATA_GPU_LAYERS` to every layer and make the context fit**, rather
+than letting the tuner search a split. That is the opposite of the right answer for Kolibri-1, which does not fit
+at all. Quality was checked at five tasks, temperature 0, both quantizations: no visible difference.
+
+Left alone deliberately: the context is at 65536 because 131072 needs the raised `iogpu.wired_limit_mb`, which is
+gone after a reboot - and with 131072 written into the config, Strata would die on the first prompt after a reboot
+with `kIOGPUCommandBufferCallbackErrorOutOfMemory`. A LaunchDaemon setting the limit at boot was offered to the
+user and not built. The two contexts run at the same speed, so 65536 costs only context length.
+
+### Qwen IQ2_XS, standalone, ctx 131072 - superseded, kept for the method note
 
 | GPU layers | tok/s | MB per token from the SSD |
 |---:|---:|---:|
@@ -78,16 +113,10 @@ model that does not fit the Mac whole. `tools/mac_split_bench.py`'s docstring no
 | 24 | 9.5 | 14.0 |
 | 30 | 7.3 | 49.4 |
 
-Not measured in the server, so read everything above 9 layers as an upper bound, as with Kolibri. No
-`STRATA_GPU_LAYERS` is set for Qwen either.
-
-**The old handover's prime suspect for Qwen is still wrong, and this conclusion survives the walk-back** because it
-rests on the 1-layer row, the count where both methods agree. The 28.8 GB `per_layer_token_embd` table being
-streamed per token is not what costs the speed: at 1 GPU layer Qwen reads 5.6 MB per token and writes 6.5 tok/s,
-while Kolibri-1 at 1 GPU layer reads a comparable 3.2 MB per token and writes 32.0 - five times as fast, with
-*more* active parameters per token (3.46B against ~2.4B). At comparable disk load the gap is still fivefold, so
-what is left is the quantization: Q4_K_M scales blocks, IQ2_XS looks codebook entries up. ~10 tok/s is this file's
-ceiling here, and the ~10 the user saw was already about the best of the layer counts, not a misconfiguration.
+Standalone, so high counts read too fast - the server gave 10.6 at 24 layers. Two readings were built on this table
+and both were wrong: that the 28.8 GB table was the cost (it is 0.2 - 0.3 MB per token once the model is on the
+GPU) and that the quantization was (worth ~10%). Neither survived being measured against Q2_0 and against a layer
+count high enough to map the file. The table is above.
 
 ## Changed in the code this session
 
@@ -120,35 +149,47 @@ NVIDIA or AMD card to run end to end. Treat it as "the guard and the shapes are 
    in the bench results (five replies per count, same prompts) would say whether 5 is really the better of the two
    and whether anything between 5 and 9 beats both. This is the remaining speed on the table for the user's main
    model, and it is small - not the 50% this session briefly thought it had found.
-2. **`Q2_0` for Qwen, the measurement that settles the quantization question** (66.4 GB download, and the family's
-   files already come from the repo setup knows). If a k-quant of the same model is several times faster than
-   IQ2_XS on this Mac, that is the recommendation for Mac users and belongs in `docs/MACOS.md`.
-3. **MTP.** The runner ignores `--mtp`; upstream reports 1.6-1.8x. llama.cpp has its own draft-model path
-   (`--model-draft`), which is not the same thing as Strata's MTP but is the lever that exists here. Unmeasured.
-4. **IQ2_XS near the Metal limit** (the old point 4, still unmeasured): `-ngl 49` fails although its 36.2 GiB of
-   weights are under the 37.44 GiB working set, because the KV cache and compute buffers come on top.
-   `sudo sysctl iogpu.wired_limit_mb=41984` (until reboot) plus `"env": {"STRATA_GPU_LAYERS": "49"}` would make it
-   fit. The user was asked and chose to measure without `sudo` first, which is what the tables above are. On this
-   session's evidence a win is unlikely: every count above ~9 layers loses more to the page cache it takes than it
-   gains on the GPU, and 49 layers would take nearly all of it. Needs the user's password, so ask.
-5. **Kolibri-1 Q3_K_S** (the old point 3): **dropped on the user's decision**, 2026-10-05. The 33.9 GB quant is a
+2. **Whether the user wants 131072 context for Qwen permanently.** It needs `iogpu.wired_limit_mb=41984`, which a
+   reboot undoes, and the config would then fail on the first prompt. A LaunchDaemon that sets the limit at boot
+   was offered and not built; the config is at 65536, which needs nothing and is not slower. Ask before building
+   it - it is a system-level change, and the only thing it buys is context length.
+3. **The Coder IQ1_M for code, tools and images** (58.4 GB download). The user named exactly those three as what
+   they want Qwen for. It needs 29.6 GB in memory against Q2_0's 35.0, so it has far more room to map the whole
+   file - the lever that was worth 3x above - and it keeps the experts for code, tools and vision. Against it: it
+   carries the same 28.8 GB table, and it is an i-quant, though this session showed that costs only ~10%. Also
+   worth knowing before downloading: does `--vision` work at all on this Mac? `engine/BUILD.json` says
+   `"vision": "none"` and this session's setup run passed `--vision no`.
+4. **MTP.** The runner ignores `--mtp`; upstream reports 1.6-1.8x. llama.cpp has its own draft-model path
+   (`--model-draft`), which is not the same thing as Strata's MTP but is the lever that exists here. Unmeasured,
+   and now the most promising untried one for Qwen, since the memory side is settled.
+5. **A runner hint when the weights land just under the working set.** The runner plans the layer count against
+   `CTX_ALLOWANCE` (4 GiB), and for Q2_0 at `-c 131072` that is too little: it picks 47 layers, the weights fit,
+   and the first request dies with `kIOGPUCommandBufferCallbackErrorOutOfMemory` - a failure that says nothing
+   about the cause. Either plan the real KV size per architecture instead of a flat 4 GiB, or say in the log that
+   the context does not fit beside the weights and name the two ways out (smaller context, or
+   `iogpu.wired_limit_mb`). Offered twice now across sessions and still not built.
+6. **Kolibri-1 Q3_K_S** (the old point 3): **dropped on the user's decision**, 2026-10-05. The 33.9 GB quant is a
    third-party file (`Eliasfpv28/Kolibri-1-Q3_K_S-GGUF`), not from the official `Hob-forge/Kolibri-1-GGUF` that
    setup's `kolibri` family points at, and setup builds its download URL from the family alone
    (`setup.py` ~line 4395, `fam["hf"].format(q=model) + s.name`), so it would need a per-model repo override first.
    The user did not want an unverified third-party file in the installer. Do not re-add it without asking.
-6. **MLX** (the old point 6): `mlx-lm` still has no `kolibri1`. PR ml-explore/mlx-lm#1945 (author velaia, "add
+7. **MLX** (the old point 6): `mlx-lm` still has no `kolibri1`. PR ml-explore/mlx-lm#1945 (author velaia, "add
    support for the (German language) Kolibri 1 model by Aleph Alpha") was open and last touched 2026-10-04 when
    checked on 2026-10-05. LM Studio and Ollama's MLX backend need it merged first. `gh` is not logged in here;
    the PR was read through `https://api.github.com/repos/ml-explore/mlx-lm/pulls/1945`.
 
-Nothing is committed. `git status` shows the working tree with all of the above.
+Two commits from this session are on `origin/main`: `e5338fb` (the Kolibri geometry fix) and `4f33f10` (the
+standalone-vs-server lesson). Git had no identity on this Mac; it is now set **locally for this repo only** to
+`shruxx <24369531+shruxx@users.noreply.github.com)`, the GitHub account the remote belongs to, deliberately not the
+user's work address, which would otherwise sit in a public history. The Qwen work above is not committed yet.
 
 ## Working on it
 
 - Tests that run on a Mac: see "Tests on this Mac" above. `pytest` has to be installed into `.venv` by hand.
-- C++ on a Mac: `cmake -B build-m5 -DSTRATA_BUILD_TESTS=ON` (this session's directory; the old `build/` holds the
-  M1 Max's `CMakeCache.txt` with `/Users/admin` paths and should not be reused). `DEVELOPER_DIR` must be
-  `/Library/Developer/CommandLineTools` and `cmake`/`ninja` come from `.venv/bin`.
+- C++ on a Mac: `cmake -B build-m5 -DSTRATA_BUILD_TESTS=ON` (this session's own directory; `build/` is setup's).
+  `DEVELOPER_DIR` must be `/Library/Developer/CommandLineTools` and `cmake`/`ninja` come from `.venv/bin`. The
+  `build/` copied from the M1 Max had `/Users/admin` paths in `CMakeCache.txt` **and** in the nested
+  `_deps/*-subbuild` caches, which made every setup run fail at step 4; it was deleted and setup rebuilt it.
 - After a change to `third_party/llama.cpp`: reconfigure, not only rebuild (`cmake -B build-llama -S
   third_party/llama.cpp -DGGML_METAL=ON -DBUILD_SHARED_LIBS=OFF`) - new source files are globbed at configure
   time - then copy `build-llama/bin/llama-server` to `engine/`.
