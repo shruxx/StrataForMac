@@ -73,6 +73,29 @@ layers - reads this Mac correctly. `engine/metal-tune.json` holds that result (`
 Next time: measure through the server whenever the answer depends on how much memory is left over, which is every
 model that does not fit the Mac whole. `tools/mac_split_bench.py`'s docstring now says so.
 
+### Kolibri: 32 -> 59 tok/s, by quantizing it down to fit
+
+Full numbers in [2026-10-05-macos-kolibri-3bit](../bench/results/2026-10-05-macos-kolibri-3bit/README.md). Same
+mechanism as the Qwen work below: Q4_K_M's 44.2 GiB cannot go on a 48 GB Mac's GPU at any Metal limit, so it runs
+as a split and copies rather than maps. The official repo has nothing smaller than Q4_K_M, so **Q3_K_M and Q3_K_S
+were quantized locally from the official Q8_0** (83.1 GB, downloaded for this; `llama-quantize` built from
+`build-llama`, `--allow-requantize`, no merge needed for the split input).
+
+| | in memory | GPU layers | tok/s |
+|---|---:|---:|---:|
+| Q4_K_M (what setup installs) | 44.2 GiB | 1 | ~32 |
+| **Q3_K_M - now the default** | 34.9 GiB | 51 (all) | **56.7 - 60.2** |
+| Q3_K_S | 31.5 GiB | 51 (all) | 62.4 - 63.1 |
+
+`strata-kolibri-q3_k_m.json` is the config to use, at `-c 65536`, and it was verified at the **stock** Metal limit
+(the log says "GPU working set 37.4 GiB"), so no `sysctl` and nothing to redo after a reboot. Q3_K_S is 5% faster
+and reads consistently terser on German tasks; Q3_K_M is not distinguishable from Q4_K_M on what could be compared,
+which is why it won. All three configs and matching `run-*.sh` scripts are in place, so the web app can switch
+between them.
+
+`run-kolibri-q4_k_m.sh` was another `/Users/admin` leftover from the M1 Max copy and would have failed on a double
+click; all `run-*.sh` were rewritten for this Mac.
+
 ### Qwen: solved, 10.6 -> 34 tok/s
 
 Full numbers in [2026-10-05-macos-qwen-q2_0](../bench/results/2026-10-05-macos-qwen-q2_0/README.md). The user asked
@@ -144,44 +167,56 @@ NVIDIA or AMD card to run end to end. Treat it as "the guard and the shapes are 
 
 ## Open, in this order
 
-1. **Measure 1 against 5 GPU layers in the server for Kolibri.** The tuner put them at 32.2 and 32.4 tok/s and
-   kept 1, being the fewer within 3%. Those two numbers come from one walk, two replies each; an A/B of the kind
-   in the bench results (five replies per count, same prompts) would say whether 5 is really the better of the two
-   and whether anything between 5 and 9 beats both. This is the remaining speed on the table for the user's main
-   model, and it is small - not the 50% this session briefly thought it had found.
-2. **Whether the user wants 131072 context for Qwen permanently.** It needs `iogpu.wired_limit_mb=41984`, which a
+1. **Decide what to keep on disk.** `~/Documents/Strata-data/models` now holds Kolibri Q8_0 (83.1 GB, only needed
+   to quantize from), Q4_K_M (47.5 GB, the quality reference and fallback), Q3_K_M (37.5 GB, in use), Q3_K_S
+   (33.9 GB, the runner-up) and Qwen Q2_0 (66.4 GB). The user was asked and had not answered when this was
+   written. Q8_0 is the obvious candidate to go, unless another quantization mix is wanted - re-downloading it is
+   ~20 minutes.
+2. **Prefill is still unmeasured.** Every number in both bench results is decode. The user works with code, so
+   pasted files make prompt processing the wait that is felt, and the runner never sets `-b` (default 2048) or
+   `-ub` (512) - untuned knobs on Metal. This is the cheapest open lever: no download, no system change.
+3. **Flash attention** is left at llama.cpp's `auto` and the runner never passes `-fa`. Probably already on, so
+   verifying is five minutes and likely finds nothing - but it has not been checked.
+4. **Speculative decoding is closed on macOS, for the record.** `llama-server` has the whole `--spec-draft-*`
+   family but needs a draft model sharing the 248320-token vocabulary, and none exists.
+   `~/Documents/Strata-data/mtp/mtp-q2_0.gguf` is not one: it declares `general.architecture = qwen4exp-mtp` with
+   `mtp.*` tensors, a prediction head for Strata's own engine, not a standalone model. llama.cpp would need a
+   patch like `kolibri1-llama.cpp.patch` for it. Upstream reports 1.6-1.8x for MTP, so it is the largest prize
+   left and the most work.
+5. **A runner hint when the weights land just under the working set.** The runner plans the layer count against
+   `CTX_ALLOWANCE` (4 GiB), and for Qwen Q2_0 at `-c 131072` that is too little: it picks 47 layers, the weights
+   fit, and the first request dies with `kIOGPUCommandBufferCallbackErrorOutOfMemory` - a failure that says
+   nothing about the cause. Either plan the real KV size per architecture instead of a flat 4 GiB, or say in the
+   log that the context does not fit beside the weights and name the two ways out (smaller context, or
+   `iogpu.wired_limit_mb`). Offered twice now across sessions and still not built.
+6. **Whether the user wants 131072 context for Qwen permanently.** It needs `iogpu.wired_limit_mb=41984`, which a
    reboot undoes, and the config would then fail on the first prompt. A LaunchDaemon that sets the limit at boot
    was offered and not built; the config is at 65536, which needs nothing and is not slower. Ask before building
-   it - it is a system-level change, and the only thing it buys is context length.
-3. **The Coder IQ1_M for code, tools and images** (58.4 GB download). The user named exactly those three as what
-   they want Qwen for. It needs 29.6 GB in memory against Q2_0's 35.0, so it has far more room to map the whole
-   file - the lever that was worth 3x above - and it keeps the experts for code, tools and vision. Against it: it
-   carries the same 28.8 GB table, and it is an i-quant, though this session showed that costs only ~10%. Also
-   worth knowing before downloading: does `--vision` work at all on this Mac? `engine/BUILD.json` says
-   `"vision": "none"` and this session's setup run passed `--vision no`.
-4. **MTP.** The runner ignores `--mtp`; upstream reports 1.6-1.8x. llama.cpp has its own draft-model path
-   (`--model-draft`), which is not the same thing as Strata's MTP but is the lever that exists here. Unmeasured,
-   and now the most promising untried one for Qwen, since the memory side is settled.
-5. **A runner hint when the weights land just under the working set.** The runner plans the layer count against
-   `CTX_ALLOWANCE` (4 GiB), and for Q2_0 at `-c 131072` that is too little: it picks 47 layers, the weights fit,
-   and the first request dies with `kIOGPUCommandBufferCallbackErrorOutOfMemory` - a failure that says nothing
-   about the cause. Either plan the real KV size per architecture instead of a flat 4 GiB, or say in the log that
-   the context does not fit beside the weights and name the two ways out (smaller context, or
-   `iogpu.wired_limit_mb`). Offered twice now across sessions and still not built.
-6. **Kolibri-1 Q3_K_S** (the old point 3): **dropped on the user's decision**, 2026-10-05. The 33.9 GB quant is a
-   third-party file (`Eliasfpv28/Kolibri-1-Q3_K_S-GGUF`), not from the official `Hob-forge/Kolibri-1-GGUF` that
-   setup's `kolibri` family points at, and setup builds its download URL from the family alone
-   (`setup.py` ~line 4395, `fam["hf"].format(q=model) + s.name`), so it would need a per-model repo override first.
-   The user did not want an unverified third-party file in the installer. Do not re-add it without asking.
-7. **MLX** (the old point 6): `mlx-lm` still has no `kolibri1`. PR ml-explore/mlx-lm#1945 (author velaia, "add
+   it - it is a system-level change, and the only thing it buys is context length. Kolibri Q3_K_M does **not**
+   need it (verified at the stock limit).
+7. **The Coder IQ1_M for code, tools and images** (58.4 GB download). The user named exactly those three as what
+   they want Qwen for. It needs 29.6 GB in memory against Q2_0's 35.0, so it has more room to map the whole file.
+   But the session's own numbers argue it will not be *faster*: pruning experts does not reduce the active count
+   per token, and its experts are stored "like IQ3_S" (3.5 bits, codebook lookups) against Q2_0's 2 bits and
+   per-bit adds - more bytes and more work per token once both are GPU-resident. Its real advantages are the
+   specialized experts and that 131072 would fit without any `sysctl`. Also worth knowing first: does `--vision`
+   work on this Mac at all? `engine/BUILD.json` says `"vision": "none"` and this session's setup run passed
+   `--vision no`.
+8. **A 3-bit step for Apple Silicon in setup.** Setup installs Kolibri Q4_K_M, the one size a 48 GB Mac cannot put
+   on its GPU, and the official repo has nothing smaller. Either offer a local quantization step for Macs or at
+   least point at it in the docs (done in `docs/MACOS.md`). Not changed in `setup.py`: it would mean shipping a
+   quantization step, and the measurements come from one Mac. The third-party `Eliasfpv28/Kolibri-1-Q3_K_S-GGUF`
+   is no longer the way in - a local Q3_K_S came out at exactly its 33.9 GB, so it can be made rather than
+   trusted.
+9. **MLX**: `mlx-lm` still has no `kolibri1`. PR ml-explore/mlx-lm#1945 (author velaia, "add
    support for the (German language) Kolibri 1 model by Aleph Alpha") was open and last touched 2026-10-04 when
    checked on 2026-10-05. LM Studio and Ollama's MLX backend need it merged first. `gh` is not logged in here;
    the PR was read through `https://api.github.com/repos/ml-explore/mlx-lm/pulls/1945`.
 
-Two commits from this session are on `origin/main`: `e5338fb` (the Kolibri geometry fix) and `4f33f10` (the
-standalone-vs-server lesson). Git had no identity on this Mac; it is now set **locally for this repo only** to
-`shruxx <24369531+shruxx@users.noreply.github.com)`, the GitHub account the remote belongs to, deliberately not the
-user's work address, which would otherwise sit in a public history. The Qwen work above is not committed yet.
+Three commits from this session are on `origin/main`: `e5338fb` (the Kolibri geometry fix), `4f33f10` (the
+standalone-vs-server lesson) and `bfd340f` (Qwen at 34 tok/s). Git had no identity on this Mac; it is now set
+**locally for this repo only** to `shruxx <24369531+shruxx@users.noreply.github.com>`, the GitHub account the
+remote belongs to - deliberately not the user's work address, which would otherwise sit in a public history.
 
 ## Working on it
 
