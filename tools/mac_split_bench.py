@@ -9,6 +9,15 @@ here can be set for every start with "env": {"STRATA_GPU_LAYERS": "<n>"} in stra
     python3 tools/mac_split_bench.py <model.gguf> 0 16 24 28      # these counts
 
 Stop Strata first: the model is loaded once per count (a minute or two each for a large model).
+
+**This measures llama-server alone, and a high layer count reads too fast here for two reasons.**  Nothing else is
+resident, while in normal use serve/server.py and the runner are; and one prompt at temperature 0 picks nearly the
+same experts every reply, so they stay in the page cache.  Both matter most where the GPU's layers have taken the
+memory the CPU-side experts are read through.  Measured with Kolibri-1 Q4_K_M on a 48 GB M5 Pro, -c 131072: at 9
+GPU layers this tool and the running server agree (28.3 against 26.5-28.3 tok/s), at 30 they do not (43.7 against
+15.7-22.5), and the server is fastest at 1-5 layers, where this tool is slowest
+(bench/results/2026-10-05-macos-m5pro-split).  So: good for ranking low counts, not for picking one.  The runner's
+own tuner measures the real replies and is the authority on the count.
 """
 from __future__ import annotations
 
@@ -29,7 +38,11 @@ PROMPT = "Write a long story about a dragon who learns to cook."
 
 
 def tok_s(llama_bin, model, args) -> float | None:
-    p = subprocess.Popen([str(llama_bin), "-m", str(model), "-c", "4096", "--port", str(PORT), *args],
+    # --threads like the runner's (get_perf_cores), not llama.cpp's own default: on an M5 Pro the thread count is
+    # worth about as much as the layer split (15 threads ~15 tok/s against 5 threads ~27 at the same 9 GPU layers,
+    # docs/MACOS.md), so a row measured here must not differ from the runner in it
+    p = subprocess.Popen([str(llama_bin), "-m", str(model), "-c", "4096", "--port", str(PORT),
+                          "--threads", str(R.get_perf_cores()), *args],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(600):
@@ -70,10 +83,14 @@ def main() -> int:
     ram, ws, size = R.physical_memory(), R.metal_working_set(llama_bin), R.model_bytes(model)
     size -= R.lazy_bytes(R.tensor_sizes(model) or [])
     budget = R.gpu_budget(ram, ws, size)
-    auto = R.gpu_layer_count(sizes[0], sizes[1], budget - R.CTX_ALLOWANCE)
+    # the runner's start count, both of its cases: a model read from the SSD starts at START_GPU_SHARE of the
+    # memory left after the reserve (the rest stays page cache), one that fits gets the GPU budget
+    from_ssd = R.pages_from_ssd(ram, size)
+    weights = R.START_GPU_SHARE * max(ram - R.OS_RESERVE, 0) if from_ssd else budget - R.CTX_ALLOWANCE
+    auto = R.gpu_layer_count(sizes[0], sizes[1], int(weights))
     n_all = len(sizes[0]) + 1
     counts = [int(x) for x in sys.argv[2:]] or sorted({0, max(auto - 6, 0), auto, min(auto + 4, n_all)})
-    no_repack = ["--no-repack"] if R.pages_from_ssd(ram, size) else []
+    no_repack = ["--no-repack"] if from_ssd else []
     print(f"{ram / R.GIB:.0f} GiB shared, GPU working set {ws / R.GIB:.1f} GiB, model {size / R.GIB:.1f} GiB, "
           f"{n_all} layers; the runner's count: {auto}")
     for n in counts:

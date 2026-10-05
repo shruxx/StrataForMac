@@ -1,112 +1,167 @@
-# Handover: the macOS port, state of 2026-10-05
+# Handover: the macOS port, state of 2026-10-05 (evening)
 
-A note for the next Claude Code session on the M5 Pro (and for the user). The previous session ran on a different
-Mac (MacBook Pro M1 Max, 32 GB). The user writes in German: answer in German.
+A note for the next Claude Code session and for the user. The user writes in German: answer in German. The session
+before this one ran on a MacBook Pro M1 Max, 32 GB; this one ran on the target Mac.
 
-## The user's Macs and models
+## The Mac this now runs on
 
-- **Target:** M5 Pro, 48 GB, 15 cores (`hw.perflevel0` = 5, a second fast-ish level of 10), Metal working set
-  37.4 GiB (from the log), 1 TB SSD. Folder `~/Documents/StrataForMac-main` - most likely a **ZIP download, not a git
-  clone**, so `git pull` did not bring updates (setup kept failing with errors already fixed on GitHub). First step:
-  `git log --oneline -1` there; if it is not a repository, clone (see the end).
-- **Models on it:** Kolibri-1 Q4_K_M, Qwen3.8-Flash-Next IQ2_XS, maybe the Coder IQ1_M.
-- **Reference:** the user's PC with an RX 7900 XT writes ~60 tok/s with Qwen on Strata's native (HIP) engine.
+MacBook Pro M5 Pro (Mac17,9), 48 GB, 15 CPU cores (5 "Super" = `hw.perflevel0`, 10 "Performance" =
+`hw.perflevel1`), 16 GPU cores, macOS 27.0.1, Metal working set 37.44 GiB, 178 GB free on the SSD.
+Working folder: `~/Documents/Projekte/StrataFormacOS`, a git clone of `shruxx/StrataForMac` (remote `upstream` =
+`Niko1221/Strata`). Models in `~/Documents/Strata-data` (108 GB): Kolibri-1 Q4_K_M and Qwen3.8-Flash-Next IQ2_XS.
 
-## How Strata runs on macOS
+Two leftovers, neither in the way: `~/Documents/StrataForMac-main` is the old ZIP download (1.3 GB, no `.git`) and
+holds nothing this clone needs; `~/Documents/Strata-data/models/Q2_0` is an empty directory.
 
-The native Strata engine (CUDA/HIP) does not run on a Mac. `engine/strata` is a shell script that starts
-`tools/strata_runner.py`, which starts llama.cpp's `llama-server` (Metal) and translates Strata's engine protocol
-(GEN / T / DONE / STOP / QUIT) to its HTTP API. `serve/server.py`, the web app, setup and the MCP server are Strata's.
-Details: [MACOS.md](MACOS.md).
+### What had to be repaired first
 
-What this fork adds on top of upstream Strata (`git log` from f3b6f18 on; upstream remote `Niko1221/Strata`):
+The clone was a **copy of the M1 Max's folder**, made under the user name `admin`, so everything machine-specific
+in it pointed at a Mac that is not this one:
 
-| Piece | Where | Why |
+- `.venv` pointed at `/Users/admin/.local/share/uv/python/...`. Repaired by pointing `.venv/bin/python3.13` at
+  Homebrew's 3.13 and running `python3.13 -m venv .venv` over it, which keeps the site-packages. The console
+  scripts kept the old shebang too, so `cmake` and `ninja` were reinstalled at their pinned versions.
+- `strata-kolibri-q4_k_m.json` pointed at `/Users/admin/...` and at a `--native` GGUF inside a deleted scratchpad.
+  Rewritten for this Mac. `strata-iq2_xs.json` did not exist here at all (only in the ZIP folder) and was written.
+  Both are gitignored, so they are per-machine and no commit carries them.
+- `engine/` and `third_party/llama.cpp` came over intact: both patches are applied in the tree and
+  `engine/llama-server` is build 782 / commit 6d7085d, which matches. Nothing had to be rebuilt.
+
+So "run `./setup.sh`" from the old handover was **not** needed in the end, and was not run: a full setup would have
+re-walked downloads and conversions for 108 GB that are already correct. `./setup.sh --check` (read-only) passes and
+sees the Mac correctly.
+
+### Tests on this Mac
+
+All green: `tools/test_strata_runner.py` (14), `tools/test_strata_mcp.py` (23), all 18 `tools/test_setup_*.py`,
+and `python -m pytest serve/` (259 passed). The only failures are the three the old handover already named and that
+fail the same way on plain upstream: `AmdTelemetry` (2) and `test_responses::test_json_schema_text_format`.
+`pytest` is not in the pinned list and was installed by hand.
+
+## What was measured, and the mistake worth not repeating
+
+Everything is in [bench/results/2026-10-05-macos-m5pro-split](../bench/results/2026-10-05-macos-m5pro-split/README.md).
+**Read its first two sections before trusting any Mac layer-count number, this session's included.**
+
+This session spent hours measuring GPU layer counts with `llama-server` on its own, concluded Kolibri-1 wants 30
+layers at ~48 tok/s, set `STRATA_GPU_LAYERS: 30`, "fixed" the tuner for not finding it - and then found all of
+that wrong when the same counts were measured **through `serve/server.py`**:
+
+| GPU layers | `llama-server` alone | in the server |
+|---:|---:|---:|
+| 1 | 32.0 | 32.2 (the tuner's own number) |
+| 5 | not measured | 32.4 (the tuner's) |
+| 9 | 28.3, 26.1 repeated | 26.5 - 28.3 |
+| 30 | 43.7 - 47.9 | 15.7 - 22.5, alternating |
+
+The two agree at low counts and diverge by a factor of two at high ones. A GPU layer costs the page cache the
+CPU-side experts are read through: 30 layers wires 28.7 GiB, which with the ~15.5 GiB read through the cache is
+44.2 of 48 GiB - enough with nothing else resident, not enough with the server and the runner beside it. Wired
+GPU memory cannot be paged out, so everything else gives way, and the replies alternate between ~16 and ~22 tok/s
+as paging comes and goes. The standalone numbers are reproducible (9 layers measured first and last in one run:
+28.3 and 26.1), so this is not drift - the benchmark simply leaves out part of the system it is predicting.
+
+**So in the server the curve falls as GPU layers rise: ~32 tok/s at 1-5, ~27 at 9, ~18 at 30, and the tuner's
+answer of 1 layer was right all along.** Its heuristic - a busy SSD at the start count means walk towards fewer
+layers - reads this Mac correctly. `engine/metal-tune.json` holds that result (`best: 1`) and
+`strata-kolibri-q4_k_m.json` has **no** `STRATA_GPU_LAYERS`: nothing to undo, the walk-back is complete. The
+`LayerTuner` change was reverted and `tools/strata_runner.py` is identical to HEAD.
+
+Next time: measure through the server whenever the answer depends on how much memory is left over, which is every
+model that does not fit the Mac whole. `tools/mac_split_bench.py`'s docstring now says so.
+
+### Qwen3.8-Flash-Next IQ2_XS (36.5 GiB in memory), standalone, ctx 131072
+
+| GPU layers | tok/s | MB per token from the SSD |
+|---:|---:|---:|
+| 1 | 6.5 | 5.6 |
+| 24 | 9.5 | 14.0 |
+| 30 | 7.3 | 49.4 |
+
+Not measured in the server, so read everything above 9 layers as an upper bound, as with Kolibri. No
+`STRATA_GPU_LAYERS` is set for Qwen either.
+
+**The old handover's prime suspect for Qwen is still wrong, and this conclusion survives the walk-back** because it
+rests on the 1-layer row, the count where both methods agree. The 28.8 GB `per_layer_token_embd` table being
+streamed per token is not what costs the speed: at 1 GPU layer Qwen reads 5.6 MB per token and writes 6.5 tok/s,
+while Kolibri-1 at 1 GPU layer reads a comparable 3.2 MB per token and writes 32.0 - five times as fast, with
+*more* active parameters per token (3.46B against ~2.4B). At comparable disk load the gap is still fivefold, so
+what is left is the quantization: Q4_K_M scales blocks, IQ2_XS looks codebook entries up. ~10 tok/s is this file's
+ceiling here, and the ~10 the user saw was already about the best of the layer counts, not a misconfiguration.
+
+## Changed in the code this session
+
+| What | Where | Why |
 |---|---|---|
-| Kolibri-1 in llama.cpp | `third_party/patches/kolibri1-llama.cpp.patch` | llama.cpp has no `kolibri1` architecture (upstream issue #29922) |
-| GPU buffer only for GPU weights | `third_party/patches/metal-split-mmap.patch` | with a GPU/CPU split, llama.cpp mapped the whole file into the Metal buffer: `kIOGPUCommandBufferCallbackErrorOutOfMemory` |
-| Patches applied by setup | `setup.py` `patch_llama_macos` (`patch -p1`, not `git apply`) | `git apply` inside this repo's tree can skip files silently |
-| Memory budget, whole-layer split, `--no-repack` | `tools/strata_runner.py` | GPU and CPU share memory; llama.cpp's `--fit` takes the CPU side as unlimited |
-| LayerTuner | `tools/strata_runner.py`, results in `engine/metal-tune.json` | the best GPU layer count depends on the Mac and the model |
-| Lazy table not counted | `lazy_bytes` in the runner | Qwen's 28.8 GB `per_layer_token_embd` stays in the file (llama.cpp lazy read) |
-| Threads = `hw.perflevel0` | `get_perf_cores` | 15 threads on the M5 Pro were slower (~15 tok/s vs ~18-35 with 5) |
-| `ERR` instead of silence | runner | an empty `DONE` showed as an empty reply; an unknown command (`VRAM`) made the server wait 120 s |
-| Model switch in the web app | `serve/server.py` (`/models-configured`, `/switch-model`, `--switched-from`), `serve/web/app.js` | restarts the server with another `strata-*.json`; falls back if the new one fails |
-| No low-RAM mode on a Mac | `setup.py` | its `experts.bin` (45.7 GB for Kolibri) is never read by the runner |
-| Merge of upstream v0.1.39 | merge commit 6d7085d | arm64 stubs for new x86 code, Mach affinity beside new Windows/Linux code |
+| Kolibri's real dimensions | `include/strata/core/layout.hpp` (`n_embd` 6144 -> 2560, `n_ff` 1536 -> 512), `include/strata/artifact/gguf_reader.hpp` (`exp_hidden`) | the native engine refused the real GGUF; see below |
+| The bench tool matches the runner, and says what it cannot see | `tools/mac_split_bench.py` | it printed a start count computed differently (26 against the runner's 10, ignoring the `START_GPU_SHARE` path), left `--threads` to llama.cpp, and its docstring now carries the standalone-vs-server warning above |
+| `engine/metal-tune.json`, `strata-*.json`, `.venv`, `build-m5/` | not in git (gitignored or new) | per-machine, see above |
 
-## Measured (M1 Max, 32 GB, Kolibri-1 Q4_K_M, 44 GiB to hold)
+`tools/strata_runner.py` and `tools/test_strata_runner.py` are **identical to HEAD**: a `LayerTuner` change was
+written and reverted, see above.
 
-From [bench/results/2026-10-04-macos-split](../bench/results/2026-10-04-macos-split/README.md):
+### The native engine's Kolibri geometry (the old handover's point 5): fixed and verified
 
-| How | tok/s | MB per token from the SSD |
-|---|---:|---:|
-| llama.cpp `--fit` (experts split) | 5.15 | 123 |
-| 12 whole GPU layers | 8.2 | 82 |
-| 0 GPU layers | 25.7 | 0.5 |
-| 6 GPU layers | 26.1 | 9.3 |
-| the tuner's choice: 1 GPU layer | 31.7 | 0.4 |
-| an `madvise(MADV_WILLNEED)` prefetch of CPU experts (dropped) | 6.86 | 114 |
+`check_architecture` refused the real file with `kolibri1.embedding_length = 2560, expected 6144`. Verified against
+the GGUF itself: `embedding_length` is 2560 and `expert_feed_forward_length` is 512. The 6144 was `n_head *
+head_dim` mistaken for `n_embd` - `attn_q.weight` is `[2560, 6144]`. `check_one` in `src/core/layout.cpp` already
+writes its shape checks symbolically, and with 2560 / 512 **all ten of them match the real tensors exactly**
+(`ffn_gate_exps` is `[2560, 512, 384]`, `attn_k` is `[2560, 512]`, ...). With the old values every one failed.
 
-Every GPU layer holds all 384 experts of its layer and takes that memory from the page cache the CPU-side experts
-are read through. With a model larger than memory, few GPU layers win.
-
-## Seen on the M5 Pro (from the user's logs and screenshots)
-
-- Kolibri Q4_K_M: ~35 tok/s with the first working version (`--fit` split, 24 GiB GPU budget, 5 threads); 23.8 with 23
-  whole GPU layers (disk read ~248 MB/s, CPU 34%, memory 47.7 of 48 GB); ~15 with 15 threads and 9 GPU layers; ~18
-  with 5 threads, tuning just started. No `[strata] layers:` lines were seen yet - unclear whether the tuner ran with
-  the current code (ZIP folder).
-- Qwen: at most ~10 tok/s. Model and runner version unknown.
-- The model switch did not appear in the header - most likely the old code (ZIP folder).
+Proven by compiling `check_architecture` against the real file both ways: with 6144 it prints the refusal above,
+with 2560 it accepts. `src/core/layout.cpp` compiles clean. What could **not** be tested here: the kernels
+themselves - `strata_core`, which builds `layout.cpp`, is only built with CUDA or HIP, so this needs a PC with an
+NVIDIA or AMD card to run end to end. Treat it as "the guard and the shapes are right, the graph is untried".
 
 ## Open, in this order
 
-1. **Get the current code onto the M5 Pro** (clone, below), run `./setup.sh`, and delete the unused
-   `~/Documents/Strata-data/packs/kolibri-q4_k_m/experts.bin` (~43 GB, written by the old low-RAM mode).
-2. **Qwen at ~10 tok/s:** find where the time per token goes. Start with the log's `[strata] memory:` and
-   `[strata] layers:` lines. Suspects, none measured: the lazy reads of the 28.8 GB per-layer embedding table (llama.cpp
-   reads rows on demand - per token and layer?), llama.cpp's Metal kernels for IQ2_XS / Q2_0, the IQ2_XS sitting just
-   above the 37.4 GiB Metal limit (39.2 GB to hold), and no MTP (the runner ignores `--mtp`; upstream says MTP gives
-   1.6-1.8x). `python3 tools/mac_split_bench.py <gguf> 0 8 16 24 32` measures GPU layer counts (stop Strata first).
-   The Coder IQ1_M (29.6 GB to hold) now runs fully on the GPU on 48 GB - compare it.
-3. **Kolibri-1 Q3_K_S** (`Eliasfpv28/Kolibri-1-Q3_K_S-GGUF`, 33.9 GB, unverified third-party quant): would fit 48 GB
-   whole. Add it to setup (`MODELS` / `FAMILIES` in `setup.py` and `tools/strata_mcp.py`, keep both lists equal - a
-   test checks), check that it loads and answers, compare its answers with Q4_K_M, measure speed on the M5 Pro.
-4. **IQ2_XS near the Metal limit:** `sudo sysctl iogpu.wired_limit_mb=41984` (until reboot) plus
-   `"env": {"STRATA_GPU_LAYERS": "49"}` would put it fully on the GPU, leaving ~6 GB for macOS. Unmeasured. A runner
-   hint in the log when a model is just above the limit was offered, not built.
-5. **Native engine bug (PCs, not the Mac):** `include/strata/artifact/gguf_reader.hpp` (~line 591) and
-   `include/strata/core/layout.hpp` (`kolibri1()`) expect Kolibri's hidden size 6144 and expert FFN 1536; the real
-   model (`config.json`) has 2560 and 512. The native engine would likely refuse the real GGUF. Not fixed.
-6. **MLX:** MLX conversions of Kolibri exist (2-8 bit, e.g. `velaia/Kolibri-1-MLX-3bit`, 34.9 GB), but `mlx-lm` has no
-   `kolibri1` yet (PR ml-explore/mlx-lm#1945, open). LM Studio and Ollama (MLX backend since 0.19) need that first.
-   Their speed claims over llama.cpp are not measured here.
+1. **Measure 1 against 5 GPU layers in the server for Kolibri.** The tuner put them at 32.2 and 32.4 tok/s and
+   kept 1, being the fewer within 3%. Those two numbers come from one walk, two replies each; an A/B of the kind
+   in the bench results (five replies per count, same prompts) would say whether 5 is really the better of the two
+   and whether anything between 5 and 9 beats both. This is the remaining speed on the table for the user's main
+   model, and it is small - not the 50% this session briefly thought it had found.
+2. **`Q2_0` for Qwen, the measurement that settles the quantization question** (66.4 GB download, and the family's
+   files already come from the repo setup knows). If a k-quant of the same model is several times faster than
+   IQ2_XS on this Mac, that is the recommendation for Mac users and belongs in `docs/MACOS.md`.
+3. **MTP.** The runner ignores `--mtp`; upstream reports 1.6-1.8x. llama.cpp has its own draft-model path
+   (`--model-draft`), which is not the same thing as Strata's MTP but is the lever that exists here. Unmeasured.
+4. **IQ2_XS near the Metal limit** (the old point 4, still unmeasured): `-ngl 49` fails although its 36.2 GiB of
+   weights are under the 37.44 GiB working set, because the KV cache and compute buffers come on top.
+   `sudo sysctl iogpu.wired_limit_mb=41984` (until reboot) plus `"env": {"STRATA_GPU_LAYERS": "49"}` would make it
+   fit. The user was asked and chose to measure without `sudo` first, which is what the tables above are. On this
+   session's evidence a win is unlikely: every count above ~9 layers loses more to the page cache it takes than it
+   gains on the GPU, and 49 layers would take nearly all of it. Needs the user's password, so ask.
+5. **Kolibri-1 Q3_K_S** (the old point 3): **dropped on the user's decision**, 2026-10-05. The 33.9 GB quant is a
+   third-party file (`Eliasfpv28/Kolibri-1-Q3_K_S-GGUF`), not from the official `Hob-forge/Kolibri-1-GGUF` that
+   setup's `kolibri` family points at, and setup builds its download URL from the family alone
+   (`setup.py` ~line 4395, `fam["hf"].format(q=model) + s.name`), so it would need a per-model repo override first.
+   The user did not want an unverified third-party file in the installer. Do not re-add it without asking.
+6. **MLX** (the old point 6): `mlx-lm` still has no `kolibri1`. PR ml-explore/mlx-lm#1945 (author velaia, "add
+   support for the (German language) Kolibri 1 model by Aleph Alpha") was open and last touched 2026-10-04 when
+   checked on 2026-10-05. LM Studio and Ollama's MLX backend need it merged first. `gh` is not logged in here;
+   the PR was read through `https://api.github.com/repos/ml-explore/mlx-lm/pulls/1945`.
+
+Nothing is committed. `git status` shows the working tree with all of the above.
 
 ## Working on it
 
-- Tests that run on a Mac: `python3 tools/test_strata_runner.py`, `python3 tools/test_setup_<name>.py` (all 18),
-  `python3 tools/test_strata_mcp.py`, `python -m pytest serve/` (needs Python 3.10+ with jinja2, regex, pyyaml: the
-  `.venv`). Known failures on a Mac, the same on plain upstream: `AmdTelemetry` (2) and `test_responses`
-  `test_json_schema_text_format`.
-- C++ on a Mac: `cmake -B build -DSTRATA_BUILD_TESTS=ON`, then `direct_file_async_test`, `platform_memory_test`,
-  `expert_multi_test`, `pool_stress 5` (`pool_test` needs a pack; `pool_affinity_test` is Windows/Linux only).
-- After a change to `third_party/llama.cpp`: reconfigure, not only rebuild (`cmake -B build-llama -S third_party/llama.cpp
-  -DGGML_METAL=ON -DBUILD_SHARED_LIBS=OFF`) - new source files are globbed at configure time - then copy
-  `build-llama/bin/llama-server` to `engine/`.
+- Tests that run on a Mac: see "Tests on this Mac" above. `pytest` has to be installed into `.venv` by hand.
+- C++ on a Mac: `cmake -B build-m5 -DSTRATA_BUILD_TESTS=ON` (this session's directory; the old `build/` holds the
+  M1 Max's `CMakeCache.txt` with `/Users/admin` paths and should not be reused). `DEVELOPER_DIR` must be
+  `/Library/Developer/CommandLineTools` and `cmake`/`ninja` come from `.venv/bin`.
+- After a change to `third_party/llama.cpp`: reconfigure, not only rebuild (`cmake -B build-llama -S
+  third_party/llama.cpp -DGGML_METAL=ON -DBUILD_SHARED_LIBS=OFF`) - new source files are globbed at configure
+  time - then copy `build-llama/bin/llama-server` to `engine/`.
 - Runner settings in a model's `"env"`: `STRATA_GPU_LAYERS` (fixed count, no tuning), `STRATA_TUNE=0`,
   `STRATA_GPU_BUDGET_GB`, `LLAMA_ARG_FIT_TARGET`.
+- Measuring layer counts: start `serve/server.py --engine strata --config <cfg> --port 8081` with
+  `"env": {"STRATA_GPU_LAYERS": N}` per count, send five or more long replies to *varied* prompts at a real
+  temperature, drop the first, and read the decode speed from the log's `eval time` lines - not the wall-clock,
+  which carries the prompt too. `tools/mac_split_bench.py` and anything else driving `llama-server` directly
+  reads high at high layer counts, by a factor of two on this Mac. Record the MB per token beside every speed:
+  the two together say whether a count is losing to the page cache, and a speed alternating between two levels
+  across replies is paging.
+- `strata-*.json` and `*.log` are gitignored and per-machine. The log is appended to, so its first lines can be
+  from another Mac entirely; `grep '^\[strata\]' <log> | tail` shows the current run.
 - Docs style (AGENTS.md): plain words, every number with what it was measured on, no claims without a measurement.
 - The user decides commits and pushes; ask before each push.
-
-## Moving to a clone (on the M5 Pro)
-
-```bash
-cd ~/Documents
-git clone https://github.com/shruxx/StrataForMac.git StrataForMac-git
-cp StrataForMac-main/strata-*.json StrataForMac-git/
-cd StrataForMac-git
-./setup.sh
-```
-
-The models stay in `~/Documents/Strata-data` and are found again. From then on `git pull` updates.
