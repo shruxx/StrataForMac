@@ -59,6 +59,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
+MAC = sys.platform == "darwin"
 DARWIN = platform.system() == "Darwin"
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
@@ -1310,7 +1311,7 @@ def get_llama_cpp():
     """llama.cpp at the pinned commit (ggml for the build, gguf-py for the tools, mtmd for images), as a zip: no git."""
     llama = ROOT / "third_party" / "llama.cpp"
     if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
-        if not is_mac or (llama / "tools" / "ui" / "CMakeLists.txt").exists():
+        if not MAC or (llama / "tools" / "ui" / "CMakeLists.txt").exists():   # macOS builds llama-server (its UI)
             return llama
         src_ui = ROOT / "build" / "_deps" / "strata_llamacpp-src" / "tools" / "ui"
         if (src_ui / "CMakeLists.txt").exists():
@@ -4160,8 +4161,10 @@ def main() -> int:
     elif a.resident_budget_gib is not None:
         warn(f"--resident-budget-gib is for UD-Q4_K_XL and UD-IQ4_XS: {model} keeps all of its experts in RAM or in "
              "the low-RAM mode")
-    low_ram = budget is None and (a.low_ram in ("on", "resident", "mmap") or
-                                  (a.low_ram == "auto" and low_ram_needed(model, ram)))
+    # macOS: never - the Metal runner reads the GGUF itself and sizes the GPU's share (tools/strata_runner.py); the
+    # low-RAM mode's experts.bin (the native engine's, ~46 GB for Kolibri-1) would only take up the SSD
+    low_ram = budget is None and not is_mac and (a.low_ram in ("on", "resident", "mmap") or
+                                                 (a.low_ram == "auto" and low_ram_needed(model, ram)))
     if low_ram and multi and not low_ram_together(a, model, ram, gpu, chosen):
         multi, sel, chosen = [], [gpu["index"]], [gpu]
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one)
@@ -4491,7 +4494,8 @@ def main() -> int:
            "the OS file cache (run setup again after the next engine update)")
     if low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
-    disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
+    # #605 (WSL's virtual disk says rotational); a model without an n-gram table (Kolibri-1) has nothing to check
+    disk = None if is_wsl() or ple is None else rotational_disk(ple)
     if disk:
         tensor = next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
         size = getattr(tensor, "expected_bytes", lambda: None)()
