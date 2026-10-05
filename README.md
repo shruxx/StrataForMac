@@ -76,10 +76,12 @@ Strata runs massive, state-of-the-art open-weight Mixture-of-Experts (MoE) model
 
 | | |
 | :--- | :--- |
-| **Apple Silicon Mac** | Any Mac with **M1, M2, M3, M4, or M5** (base, Pro, Max, Ultra) with **Unified Memory**:<br>• **32 GB:** Runs Qwen Coder (`IQ1_M`) or Kolibri-1 in low-RAM mode<br>• **48 GB:** Runs **Kolibri-1 Q4_K_M** (ideal fit!) and Qwen `IQ2_XS` at full speed<br>• **64 GB:** Runs Kolibri-1 and Qwen `IQ3_XXS` with room for large contexts<br>• **96 GB – 128 GB+:** Runs Kolibri-1 with 262K context and Qwen `IQ3_S` |
+| **Apple Silicon Mac** | Any Mac with **M1, M2, M3, M4, or M5** (base, Pro, Max, Ultra) with **Unified Memory**:<br>• **32 GB:** Runs Qwen Coder (`IQ1_M`); Kolibri-1 runs with part of its experts read from the SSD<br>• **48 GB:** Runs **Kolibri-1 Q4_K_M** (part of its experts from the SSD; the runner tunes the GPU share) and Qwen `IQ2_XS` at full speed<br>• **64 GB:** Runs Kolibri-1 and Qwen `IQ3_XXS` with room for large contexts<br>• **96 GB – 128 GB+:** Runs Kolibri-1 with 262K context and Qwen `IQ3_S` |
 | **PC (NVIDIA / AMD)** | **NVIDIA** GeForce RTX 20, 30, 40 or 50 series (12 GB+ VRAM) or **AMD** Radeon RX 7900 / 9070 / AI PRO series, with 32–64 GB system RAM |
 | **Disk** | ~70–80 GB free space on a fast SSD |
 | **System** | macOS 12 (Monterey) or newer (macOS 13+ recommended), Windows 10 / 11 or Linux |
+
+Experimental on PCs, written and tested by community members: [older graphics cards](docs/OLDER_GPUS.md) (Tesla P40 / V100, GTX 10, Radeon VII / MI50), [Intel Arc](docs/INTEL_ARC.md), [processors without AVX2](docs/INSTALL.md#older-cpus-experimental).
 
 Full platform details: [docs/MACOS.md](docs/MACOS.md) and [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 
@@ -137,15 +139,15 @@ Setup automatically suggests the best fit for your RAM.
 | Unified Memory / RAM | Recommended Model | Highlights |
 | :--- | :--- | :--- |
 | **32 GB** | **[Coder](docs/MODELS.md#coder)** (Qwen) | Specialized coding version with half the experts pruned. High SWE-bench scores; fits 32 GB easily. |
-| **48 GB** | **[Kolibri-1](docs/MODELS.md#kolibri-1-aleph-alpha)** (Q4_K_M) | **Aleph Alpha's 78.1B sovereign MoE**. Superb German & English reasoning, 262K context, completely fits 48 GB. |
+| **48 GB** | **[Kolibri-1](docs/MODELS.md#kolibri-1-aleph-alpha)** (Q4_K_M) | **Aleph Alpha's 78.1B sovereign MoE**. Superb German & English reasoning, 262K context. 47.5 GB: on 48 GB part of its experts are read from the SSD. |
 | **64 GB** | **Kolibri-1** or **Qwen IQ2_XS** | High accuracy, full context capacity, fast inference. |
 | **96 GB or more** | **Kolibri-1** or **Qwen IQ3_S** | Maximum precision, large context window (up to 262,144 tokens). |
 
 ### Featured Models
-- **[Kolibri-1 (Aleph Alpha)](docs/MODELS.md#kolibri-1-aleph-alpha)**: Released in October 2026 under the Apache 2.0 license. Features 50 layers with 384 routed experts per layer + 1 shared expert (Top-6 routing, only **3.46B parameters active per token**). Offers state-of-the-art German and English comprehension, deep reasoning, and a 262K context window. Available in `Q4_K_M` (~44.5 GB single file).
+- **[Kolibri-1 (Aleph Alpha)](docs/MODELS.md#kolibri-1-aleph-alpha)**: Released in October 2026 under the Apache 2.0 license. Features 50 layers with 384 routed experts per layer + 1 shared expert (Top-6 routing, only **3.46B parameters active per token**). Offers state-of-the-art German and English comprehension, deep reasoning, and a 262K context window. Available in `Q4_K_M` (47.5 GB single file).
 - **[Qwen3.8-Flash-Next Coder](docs/MODELS.md#coder)**: Coding specialist with pruned experts, tailored for development workflows and code generation. Fits comfortably in 32 GB RAM.
 - **[Swift 1.5](docs/MODELS.md#swift-15)**: A fine-tune that reaches answers with condensed thinking phases for faster turnaround.
-- **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)**: 4-bit experimental layout reading overflow experts from SSD.
+- **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs)** (~4-bit, 94 GB, new in 0.1.39) and the experimental **[UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (111 GB): the largest versions; part of their experts are read from the SSD.
 
 Model details, download sizes, and benchmarks: [docs/MODELS.md](docs/MODELS.md).
 
@@ -165,6 +167,10 @@ Model details, download sizes, and benchmarks: [docs/MODELS.md](docs/MODELS.md).
   - Base URL: **`http://127.0.0.1:8080`** (`ANTHROPIC_BASE_URL=http://127.0.0.1:8080`)
 - **Multimodal (Images):** Enable images during setup, then upload pictures directly in the chat interface or send vision requests via the API.
 - **Stopping and Restarting:** Close the terminal window to stop the engine. Run `./run-kolibri-q4_k_m.sh` (or `./run-<model>.sh`) to start it again instantly.
+- **Codex CLI and other apps that use the OpenAI Responses API:** `http://127.0.0.1:8080/v1/responses` ([setup](docs/DETAILS.md#the-responses-api-and-codex-cli)).
+- **Thinking:** choose **off, low, medium or high** in the chat menu or in your app's "reasoning effort". Off is the fastest; high is best for hard questions.
+- **Several models:** with more than one model set up, a list in the web app's header switches between them (the current one stops first, so its memory is free).
+- **One request at a time:** by default Strata answers one request and the others wait; `"parallel": 2` in `strata-<model>.json` answers several at once ([BATCHING.md](docs/BATCHING.md), NVIDIA/AMD engine).
 
 Full API reference and advanced settings: [docs/DETAILS.md](docs/DETAILS.md#using-it).
 
@@ -191,6 +197,14 @@ Architecture details, benchmarks, and math: [docs/MACOS.md](docs/MACOS.md), [doc
 - **Port 8080 already in use:** Another instance is running or another process occupies port 8080. Start on another port with `--port 8081`.
 - **System slow or out-of-memory:** If other heavy applications (browsers with many tabs, video editors) consume RAM, close them or select a more compact quantization format.
 - More solutions: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) and [docs/MACOS.md](docs/MACOS.md).
+
+The models: [Kolibri-1](https://huggingface.co/Aleph-Alpha/Kolibri-1) by Aleph Alpha (GGUF and llama.cpp patch by
+[Hob-forge](https://huggingface.co/Hob-forge/Kolibri-1-GGUF)) and [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)
+by the Qwen team, compressed by [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), UkisAI
+(Swift 1.5) and Unsloth. Strata is [Niko1221/Strata](https://github.com/Niko1221/Strata) with a macOS port; it uses parts of
+[llama.cpp / ggml](https://github.com/ggml-org/llama.cpp). All credits: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits).
+Strata is open source under the [MIT License](LICENSE). A few parts and every model have their own licenses
+([which ones](docs/HOW_IT_WORKS.md#license)).
 
 ---
 

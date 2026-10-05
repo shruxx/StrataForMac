@@ -515,6 +515,10 @@ def run_serve(cfg: dict):
                                                             " -> kept" if tuner.done else "") + "\n")
                         sys.stderr.flush()
                     pending = nxt
+            else:
+                # a command this engine does not have (VRAM: the CUDA engine's elastic expert cache, #533): say so at
+                # once - serve/server.py waits for an answer and would take silence for a dead engine
+                report_error(f"the macOS engine has no {raw.split()[0]} command")
     finally:
         try:
             server_proc.terminate()

@@ -76,6 +76,11 @@ The macOS port replaces Linux- and Windows-specific APIs with native Darwin and 
 - With the experts split, stock llama.cpp still mapped the model file into the GPU's buffer from its first tensor to its last, the CPU-side experts included, and Metal keeps that resident (OLMoE-1B-7B Q4_K_M on an M1 Max, --fit-target 25600: a 3961 MiB GPU buffer for a plan of 1420 MiB). Setup applies `third_party/patches/metal-split-mmap.patch`, which copies the GPU's own weights into its buffer in that case (1420 MiB) and leaves the rest mapped.
 - llama.cpp has no `kolibri1` architecture yet: setup applies `third_party/patches/kolibri1-llama.cpp.patch` (from the [Kolibri-1 GGUF](https://huggingface.co/Hob-forge/Kolibri-1-GGUF), without its Python converter) before building `llama-server`. Without it the engine stops with "unknown model architecture: 'kolibri1'".
 
+### 7. Upstream 0.1.39 on macOS
+- Work as on a PC (server and web app): the OpenAI Responses API (`/v1/responses`, Codex CLI), the thinking levels, the Settings view, the Unsloth UD-IQ4_XS model in setup's menu.
+- Not on the Metal engine, which is llama-server behind `tools/strata_runner.py`: several requests at once (`"parallel"`; the runner reports no batch slots, so requests run one at a time as before), the elastic expert cache (`VRAM`, answered with `ERR`), `"effort_position": "end"` (needs the native engine's `--tail-role-token`; the server says so and keeps the default), and the decode / long-prompt / multi-GPU speedups of the native CUDA and HIP engines.
+- `src/kernels/cpu/kq_avx1.cpp` (new in 0.1.39, the AVX1 router dot for older x86 CPUs) and the new CPU probes `cpu_avx1_ok` / `cpu_sse42_ok` compile to stubs on arm64; the CPU thread pool keeps its Mach affinity tags beside 0.1.39's new Windows CPU Sets and Linux affinity code.
+
 ---
 
 ## Building by Hand
