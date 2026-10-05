@@ -68,6 +68,7 @@ def main() -> int:
         print("llama-server or the model's layer table not found")
         return 1
     ram, ws, size = R.physical_memory(), R.metal_working_set(llama_bin), R.model_bytes(model)
+    size -= R.lazy_bytes(R.tensor_sizes(model) or [])
     budget = R.gpu_budget(ram, ws, size)
     auto = R.gpu_layer_count(sizes[0], sizes[1], budget - R.CTX_ALLOWANCE)
     n_all = len(sizes[0]) + 1

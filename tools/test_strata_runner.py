@@ -76,6 +76,21 @@ class TestStrataRunner(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("-ngl") + 1], "26")
         self.assertNotIn("--fit-target", cmd)
 
+    def test_lazy_table_does_not_count(self):
+        # the Coder IQ1_M (GGUF tensor tables): 58.4 GB in the files, a 28.8 GB per-layer embedding table among them,
+        # which llama.cpp reads row by row from the file (TENSOR_READ_LAZY, > 4 GiB)
+        G = strata_runner.GIB
+        tensors = [("per_layer_token_embd.weight", 28_800_000_000), ("token_embd.weight", 900_000_000),
+                   *((f"blk.{i}.ffn_down_exps.weight", 600_000_000) for i in range(48)), ("output.weight", 500_000_000)]
+        self.assertEqual(strata_runner.lazy_bytes(tensors), 28_800_000_000)
+        self.assertEqual(strata_runner.lazy_bytes([("per_layer_token_embd.weight", 3 * G)]), 0)   # small: loaded
+        blocks, head = strata_runner.layer_sizes(None, tensors)
+        self.assertEqual((len(blocks), head), (48, 500_000_000))
+        model = sum(b for _, b in tensors) - strata_runner.lazy_bytes(tensors)
+        # a 48 GB Mac: the 30 GB that need memory fit on the GPU whole; counting the table, it did not
+        self.assertGreaterEqual(strata_runner.gpu_budget(48 * G, 36 * G, model), model + strata_runner.CTX_ALLOWANCE)
+        self.assertTrue(strata_runner.pages_from_ssd(48 * G, model + 28_800_000_000))
+
     def test_no_repack_only_when_paging(self):
         G = strata_runner.GIB
         self.assertTrue(strata_runner.pages_from_ssd(48 * G, 47454113472))     # Kolibri Q4_K_M on 48 GB

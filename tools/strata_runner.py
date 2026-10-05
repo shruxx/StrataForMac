@@ -184,27 +184,46 @@ def model_shards(model_path) -> list[Path]:
     return sorted(p.parent.glob(f"{m.group(1)}-*-of-{m.group(2)}.gguf")) if m else [p]
 
 
-def layer_sizes(model_path) -> tuple[list[int], int] | None:
-    """The bytes of each transformer block (blk.N.*) and of the output head (output*, which llama.cpp offloads as
-    one more layer), from the GGUF tensor tables; None when the files cannot be read."""
+LAZY_MIN = 4 * GIB             # llama.cpp reads a TENSOR_READ_LAZY tensor larger than this from the file on demand
+
+
+def tensor_sizes(model_path) -> list[tuple[str, int]] | None:
+    """Every tensor's name and bytes, from the GGUF tensor tables (all shards); None when they cannot be read."""
     try:
         from gguf_reader import GGUFFile
-        blocks: dict[int, int] = {}
-        head = 0
+        out = []
         for f in model_shards(model_path):
             g = GGUFFile(f)
             end = f.stat().st_size - g.data_start
             ts = sorted(g.tensors, key=lambda t: t.offset)
-            for t, nxt in zip(ts, ts[1:] + [None]):
-                size = (nxt.offset if nxt else end) - t.offset
-                m = re.match(r"blk\.(\d+)\.", t.name)
-                if m:
-                    blocks[int(m.group(1))] = blocks.get(int(m.group(1)), 0) + size
-                elif t.name.startswith("output"):
-                    head += size
-        return ([blocks[i] for i in sorted(blocks)], head) if blocks else None
+            out += [(t.name, (nxt.offset if nxt else end) - t.offset) for t, nxt in zip(ts, ts[1:] + [None])]
+        return out
     except Exception:
         return None
+
+
+def lazy_bytes(tensors: list[tuple[str, int]]) -> int:
+    """The bytes llama.cpp leaves in the file and reads row by row while it answers: the per-layer embedding table
+    of Qwen3.8-Flash-Next (TENSOR_READ_LAZY, larger than 4 GiB: lazy mode "auto").  The Coder IQ1_M's 58.4 GB are a
+    28.8 GB table of this kind, 25.1 GB of experts and 4.5 GB of the rest - 29.6 GB that need memory."""
+    return sum(b for name, b in tensors if name.startswith("per_layer_token_embd") and b > LAZY_MIN)
+
+
+def layer_sizes(model_path, tensors: list[tuple[str, int]] | None = None) -> tuple[list[int], int] | None:
+    """The bytes of each transformer block (blk.N.*) and of the output head (output*, which llama.cpp offloads as
+    one more layer), from the GGUF tensor tables; None when the files cannot be read."""
+    tensors = tensors if tensors is not None else tensor_sizes(model_path)
+    if not tensors:
+        return None
+    blocks: dict[int, int] = {}
+    head = 0
+    for name, size in tensors:
+        m = re.match(r"blk\.(\d+)\.", name)
+        if m:
+            blocks[int(m.group(1))] = blocks.get(int(m.group(1)), 0) + size
+        elif name.startswith("output"):
+            head += size
+    return ([blocks[i] for i in sorted(blocks)], head) if blocks else None
 
 
 def gpu_layer_count(blocks: list[int], head: int, weight_budget: int) -> int:
@@ -389,6 +408,9 @@ def run_serve(cfg: dict):
     # the GPU's share of the shared memory (gpu_budget); a margin in the config's "env" (LLAMA_ARG_FIT_TARGET) or
     # an explicit budget (STRATA_GPU_BUDGET_GB) wins
     ram, working_set, model = physical_memory(), metal_working_set(llama_bin), model_bytes(model_path)
+    tensors = tensor_sizes(model_path)
+    lazy = lazy_bytes(tensors) if tensors else 0
+    model -= lazy                                       # what has to be in memory: the table stays in the file
     budget = None
     if os.environ.get("STRATA_GPU_BUDGET_GB"):
         budget = int(float(os.environ["STRATA_GPU_BUDGET_GB"]) * GIB)
@@ -401,9 +423,9 @@ def run_serve(cfg: dict):
     # --fit, 92.8 with -ngl 5 (bench/results/2026-10-04-macos-split).  How many is found by LayerTuner.
     fit_target, gpu_layers, sizes, tuner = None, None, None, None
     if os.environ.get("STRATA_GPU_LAYERS", "").strip().isdigit():     # set by hand: no tuning
-        gpu_layers, sizes = int(os.environ["STRATA_GPU_LAYERS"]), layer_sizes(model_path)
+        gpu_layers, sizes = int(os.environ["STRATA_GPU_LAYERS"]), layer_sizes(model_path, tensors)
     elif budget is not None and model + CTX_ALLOWANCE > budget:
-        sizes = layer_sizes(model_path)
+        sizes = layer_sizes(model_path, tensors)
         if sizes:
             weights = (START_GPU_SHARE * max(ram - OS_RESERVE, 0) if no_repack else budget - CTX_ALLOWANCE)
             gpu_layers = gpu_layer_count(sizes[0], sizes[1], int(weights))
@@ -418,7 +440,8 @@ def run_serve(cfg: dict):
         if tuner:
             how += " (tuned)" if tuner.done else " (tuning: measures the replies, tries other counts while idle)"
         sys.stderr.write(f"[strata] memory: {ram / GIB:.0f} GiB shared, GPU working set {working_set / GIB:.1f} GiB, "
-                         f"model {model / GIB:.1f} GiB -> {how}\n")
+                         f"model {model / GIB:.1f} GiB" + (f" (+ {lazy / GIB:.1f} GiB table read from the SSD)"
+                                                          if lazy else "") + f" -> {how}\n")
 
     def start(layers):
         """llama-server with `layers` GPU layers (None: --fit), once its /health answers; exits the runner if not."""
