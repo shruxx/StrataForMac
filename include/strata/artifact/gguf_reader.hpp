@@ -588,7 +588,7 @@ inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& wa
     }
     const bool is_kolibri = (a == "kolibri" || a == "kolibri1");
     const uint64_t exp_blocks = is_kolibri ? 50 : want.block_count;
-    const uint64_t exp_hidden = is_kolibri ? 6144 : want.hidden;
+    const uint64_t exp_hidden = is_kolibri ? 2560 : want.hidden;
     const uint64_t exp_heads = is_kolibri ? 48 : want.head_count;
     const uint64_t exp_heads_kv = is_kolibri ? 4 : want.head_count_kv;
 

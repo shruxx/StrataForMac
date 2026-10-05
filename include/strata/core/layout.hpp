@@ -68,7 +68,9 @@ struct ModelGeometry {
     static ModelGeometry kolibri1() {
         ModelGeometry g;
         g.arch = ArchitectureType::Kolibri1;
-        g.n_embd = 6144;
+        // kolibri1.embedding_length in the GGUF.  Not 6144: that is n_head * head_dim, the width attn_q
+        // projects TO, and attn_q.weight is [2560, 6144].
+        g.n_embd = 2560;
         g.n_layers = 50;
         g.qsa_interval = 5;      // 4:1 sliding window vs full attention pattern
         g.n_head = 48;
@@ -77,7 +79,7 @@ struct ModelGeometry {
         g.sliding_window = 513;
         g.n_expert = 384;
         g.n_expert_used = 6;
-        g.n_ff = 1536;
+        g.n_ff = 512;            // kolibri1.expert_feed_forward_length; ffn_gate_exps is [2560, 512, 384]
         g.hc = 0;
         g.hc_lr = 0;
         return g;
