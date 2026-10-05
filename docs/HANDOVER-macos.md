@@ -165,6 +165,34 @@ with 2560 it accepts. `src/core/layout.cpp` compiles clean. What could **not** b
 themselves - `strata_core`, which builds `layout.cpp`, is only built with CUDA or HIP, so this needs a PC with an
 NVIDIA or AMD card to run end to end. Treat it as "the guard and the shapes are right, the graph is untried".
 
+## Could these models run under Ollama instead? Measured: no, both ways
+
+Worth knowing, because once a model fits the GPU whole this fork adds nothing to its *speed*: the layer tuner is
+overridden by `STRATA_GPU_LAYERS`, the budget planning is moot, and `metal-split-mmap.patch` only applies when
+weights are split with the CPU. Kolibri Q3_K_M at 51 of 51 layers is plain llama.cpp with Metal, so any
+llama.cpp-based runtime should match its ~59 tok/s. Tried with Ollama 0.35.1 on this Mac:
+
+- **Kolibri Q3_K_M**: `ollama create` *succeeds* - it copies the 35 GB, parses the GGUF and writes a manifest, so
+  the import validates nothing. The first request then fails with
+  `error loading model: unknown model architecture: 'kolibri1'`. Upstream llama.cpp has only an open feature
+  request for the model (ggml-org/llama.cpp#29922); the architecture lives in this fork's
+  `kolibri1-llama.cpp.patch` (18 mentions over 485 lines) and nowhere else.
+- **Qwen Q2_0**: `ollama create` fails earlier, with
+  `unsupported tensor "blk.0.ffn_down_exps.weight" size overflows` - Ollama's own GGUF parser, before any
+  architecture check. The likely cause is `GGML_TYPE_Q2_0 = 42` with `GGML_TYPE_COUNT = 43`, the newest ggml type
+  there is and so probably newer than Ollama's vendored llama.cpp: an unknown type cannot be sized. The split
+  layout may contribute; this was **not** isolated. `qwen4exp` itself is upstream (it appears in
+  `third_party/llama.cpp/src/llama-kv-cache.cpp` and in none of our patches), so for Qwen it is the quantization
+  type, not the architecture, that is too new - but whether Ollama's llama.cpp knows `qwen4exp` is still untested.
+  An IQ2_XS quant (ggml type 17, long-standing) would get past the parser and answer that.
+
+Clean-up note: `ollama rm` removed the manifest but left the 35 GB blob behind, unreferenced
+(`~/.ollama/models/blobs`, 0 hits when grepping `manifests/` for its digest). It was deleted by hand and
+`~/.ollama` is back at its original 44 GB with the user's five own models intact.
+
+**The unlock for Kolibri is upstreaming the patch**, which would serve Ollama, LM Studio and llama.cpp at once and
+let this fork drop it.
+
 ## Open, in this order
 
 1. **Decide what to keep on disk.** `~/Documents/Strata-data/models` now holds Kolibri Q8_0 (83.1 GB, only needed
